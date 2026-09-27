@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Claim Mars</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span>CLAIM&nbsp;MARS</span>
+      </div>
+      <div class="stats">
+        <div><strong id="stat-total">–</strong><span>plots</span></div>
+        <div><strong id="stat-sold">0</strong><span>claimed</span></div>
+        <div><strong>$5</strong><span>from</span></div>
+      </div>
+    </header>
+
+    <nav class="features" id="features"></nav>
+
+    <div id="labels"></div>
+
+    <aside class="panel hidden" id="panel">
+      <button class="panel-close" id="panel-close" aria-label="Close">×</button>
+      <div class="panel-tag" id="panel-tag">Standard plot</div>
+      <h2 id="panel-title">Plot</h2>
+      <div class="panel-region" id="panel-region"></div>
+      <dl class="panel-grid">
+        <dt>Plot ID</dt><dd id="panel-id"></dd>
+        <dt>Coordinates</dt><dd id="panel-coords"></dd>
+        <dt>Elevation</dt><dd id="panel-elev"></dd>
+        <dt>Area</dt><dd id="panel-area"></dd>
+      </dl>
+      <div class="panel-price">
+        <span id="panel-price">$5</span>
+        <span class="panel-status">Available</span>
+      </div>
+      <button class="cta" id="panel-cta" disabled>Claim this plot · checkout coming next</button>
+    </aside>
+
+    <div class="hint" id="hint">Drag to rotate · scroll to zoom · click a plot</div>
+    <footer class="disclaimer">
+      Novelty digital plots on a map. Not legal ownership of Martian land (Outer Space Treaty, 1967).
+      Imagery: NASA/USGS Viking &amp; MOLA.
+    </footer>
+
+    <div class="loader" id="loader"><span>Approaching Mars…</span></div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

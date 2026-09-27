@@ -154,17 +154,18 @@ function selectCell(cell) {
   const feature = featureAt(info.lat, info.lon);
   const price = priceAt(info.lat, info.lon);
 
-  $('panel-tag').textContent = feature ? `${feature.tier} plot` : 'Standard plot';
+  $('panel-tag').textContent = feature ? `Famous plot · ${feature.tier}` : 'Founding Settler plot';
   $('panel-tag').className = `panel-tag tier-${(feature?.tier ?? 'standard').toLowerCase()}`;
   $('panel-title').textContent = feature ? feature.name : 'Martian plot';
-  $('panel-region').textContent = feature ? feature.blurb : 'Open terrain, ready to be claimed.';
+  $('panel-region').textContent = feature ? feature.blurb : 'Open terrain, free to claim. One free plot per person.';
   $('panel-id').textContent = cell;
   $('panel-coords').textContent = `${fmtLat(info.lat)}, ${fmtLon(info.lon)}`;
   $('panel-elev').textContent = elevationAt
     ? `${Math.round(elevationAt(info.lat, info.lon)).toLocaleString()} m`
     : '…';
   $('panel-area').textContent = `${Math.round(info.areaKm2).toLocaleString()} km²`;
-  $('panel-price').textContent = `$${price}`;
+  $('panel-price').textContent = price ? `$${price}` : 'Free';
+  $('panel-cta').textContent = price ? 'Buy this plot · checkout coming soon' : 'Claim for free · sign-in coming soon';
   panel.classList.remove('hidden');
 }
 $('panel-close').addEventListener('click', () => selectCell(null));

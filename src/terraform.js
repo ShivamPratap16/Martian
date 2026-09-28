@@ -61,11 +61,17 @@ function patchSurface(material, uniforms) {
         vec3 shallow = vec3(0.07, 0.30, 0.38);
         vec3 deep = vec3(0.015, 0.07, 0.17);
         vec3 water = mix(shallow, deep, smoothstep(0.0, 1800.0, depth));
-        // Vegetation: a band above the shoreline, away from the poles.
+        // Vegetation: lowlands and coasts turn green, thinning out with altitude and towards
+        // the poles, so the high southern plateaus and volcano tops stay red. Colours are
+        // linear-space greens (tinting the red soil would only ever give brown).
         float lat = abs(vMapUv.y - 0.5) * 180.0;
-        float shore = smoothstep(1400.0, 80.0, -depth) * (1.0 - terraWater);
-        float veg = shore * greenAmount * smoothstep(62.0, 45.0, lat);
-        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.55, 0.85, 0.45) + vec3(0.0, 0.03, 0.0), veg * 0.75);
+        float lowland = smoothstep(4200.0, 150.0, -depth) * (1.0 - terraWater);
+        float veg = lowland * greenAmount * smoothstep(64.0, 42.0, lat);
+        float lum = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
+        vec3 forest = vec3(0.035, 0.085, 0.02);
+        vec3 grass = vec3(0.13, 0.19, 0.045);
+        vec3 plants = mix(forest, grass, clamp(lum * 3.5, 0.0, 1.0)); // keep the terrain's light/shade detail
+        diffuseColor.rgb = mix(diffuseColor.rgb, plants, veg * 0.85);
         diffuseColor.rgb = mix(diffuseColor.rgb, water, terraWater);`
       )
       .replace(

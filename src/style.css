@@ -169,7 +169,7 @@ button { font: inherit; color: inherit; }
 }
 .sound-btn:hover, .sound-btn[aria-pressed='true'] { border-color: var(--accent); }
 .sound-icon { font-size: 18px; }
-.night-btn { top: 118px; }
+.night-btn { top: 128px; }
 .sound-text { display: flex; flex-direction: column; line-height: 1.2; }
 .sound-text strong { font-size: 13px; }
 .sound-text small { font-size: 11px; color: var(--muted); max-width: 230px; }
@@ -202,7 +202,7 @@ button { font: inherit; color: inherit; }
 
 /* ---------- terraforming ---------- */
 .terra {
-  position: fixed; left: 16px; top: 172px; width: 250px; padding: 12px 14px; border-radius: 14px;
+  position: fixed; left: 16px; top: 190px; width: 250px; padding: 12px 14px; border-radius: 14px;
   background: var(--glass); border: 1px solid var(--line); backdrop-filter: blur(10px); font-size: 12px;
 }
 .terra.previewing { border-color: #5aa8ff; }

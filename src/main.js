@@ -706,6 +706,7 @@ if (import.meta.env.DEV) {
     controls,
     spin,
     flyTo,
+    terraform, // e.g. __mars.terraform.setCount(41162) to jump to a fully terraformed Mars
     // Preview a busy Mars: __mars.previewColonies(5000). Visual only, nothing is saved.
     previewColonies(n) {
       const pick = new Set();

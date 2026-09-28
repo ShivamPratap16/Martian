@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.117.2",
     "h3-js": "^4.5.0",
     "three": "^0.186.1"
   },

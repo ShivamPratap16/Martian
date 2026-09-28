@@ -1,0 +1,6 @@
+project_id = "rgpzxvlhwwuhhaszwhsc"
+
+# Called from the browser with the publishable key (not a JWT); the function does its
+# own checks (limits, Turnstile, edit tokens).
+[functions.claim]
+verify_jwt = false

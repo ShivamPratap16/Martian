@@ -13,7 +13,8 @@ import {
 } from './planet.js';
 import { allPlots, plotAt, plotInfo, createGridLines, createCellHighlight } from './grid.js';
 import { FEATURES, featureAt, priceAt } from './features.js';
-import { loadClaims, saveClaim, myFreeClaim } from './store.js';
+import { loadClaims, saveClaim, updateClaim, myFreeClaim, editTokenFor, editLinkFor, importEditLink } from './store.js';
+import { getTurnstileToken } from './turnstile.js';
 import { createClaimLayer, normalizeUrl, findLogo, logoDevUrl, fileToLogo } from './logos.js';
 import { lightDelaySeconds, formatDuration, marsSolDate } from './orbits.js';
 import { createMarsWind } from './sound.js';
@@ -91,12 +92,27 @@ spin.add(claimLayer.object);
 const colonies = createColonyLights();
 spin.add(colonies.object);
 let claims = new Map();
-loadClaims().then((c) => {
-  claims = c;
+const editCell = importEditLink(); // opened from an edit link on another device
+async function refreshClaims() {
+  try {
+    claims = await loadClaims();
+  } catch {
+    return; // keep showing what we have; the next refresh will retry
+  }
   claimLayer.sync(claims);
   colonies.sync(claims);
   updateClaimedStat();
+  if (selectedCell && !cine && $('claim-form').classList.contains('hidden')) selectCell(selectedCell);
+}
+refreshClaims().then(() => {
+  if (editCell && claims.has(editCell)) {
+    const { lat, lon } = plotInfo(editCell);
+    flyTo(lat, lon, 1.6);
+    selectCell(editCell);
+  }
 });
+// Everyone shares one map: pick up other people's claims (and approvals) as they happen.
+setInterval(() => !cine && !document.hidden && refreshClaims(), 30000);
 function updateClaimedStat() {
   document.getElementById('stat-sold').textContent = claims.size.toLocaleString();
   if (!terraPreview) {
@@ -196,9 +212,10 @@ canvas.addEventListener('pointerleave', () => {
 function showHovercard(claim) {
   hovercard.classList.toggle('hidden', !claim);
   if (!claim) return;
-  $('hc-logo').src = claim.logo.src;
-  $('hc-title').textContent = claim.title;
-  $('hc-desc').textContent = claim.description;
+  $('hc-logo').src = claim.logo?.src ?? '';
+  $('hc-logo').classList.toggle('hidden', !claim.logo);
+  $('hc-title').textContent = claim.title ?? 'Claimed plot';
+  $('hc-desc').textContent = claim.title ? claim.description : 'A new settler is here. Their logo is being reviewed.';
   $('hc-domain').textContent = claim.domain;
 }
 
@@ -266,16 +283,20 @@ function selectCell(cell) {
   show('panel-cta', !claim);
   show('panel-goto-mine', false);
   if (claim) {
-    $('owner-logo').src = claim.logo.src;
-    $('owner-title').textContent = claim.title;
+    const owned = !!editTokenFor(cell);
+    $('owner-logo').src = claim.logo?.src ?? '';
+    show('owner-logo', !!claim.logo);
+    $('owner-title').textContent = claim.title ?? 'Claimed plot';
     $('owner-domain').textContent = claim.domain;
-    $('owner-desc').textContent = claim.description;
-    show('owner-desc', !!claim.description);
+    $('owner-desc').textContent = claim.title ? claim.description : 'A new settler is here. Their logo is being reviewed.';
+    show('owner-desc', !!$('owner-desc').textContent);
+    show('owner-pending', owned && claim.status === 'pending');
+    show('owner-actions', owned);
     $('owner-visit').href = claim.url;
     show('owner-visit', !!claim.url);
     $('owner-since').textContent =
       `${claim.free ? 'Founding Settler' : 'Owner'} since ${new Date(claim.createdAt).toLocaleDateString()}` +
-      (cell === mine ? ' · this is your plot' : '');
+      (owned ? ' · this is your plot' : '');
     updateOwnerSignal();
     const video = videos.get(cell);
     show('owner-video', !!video);
@@ -313,6 +334,7 @@ $('panel-goto-mine').addEventListener('click', () => {
 
 // ---------- claim form ----------
 let formLogo = null; // { type: 'logodev' | 'monogram' | 'upload', src }
+let formMode = 'create'; // or 'edit' when the owner changes their plot
 let lookupSeq = 0;
 let lookupTimer = null;
 
@@ -330,12 +352,43 @@ function resetForm() {
   setFormLogo(null, "Paste your link and we'll fetch your logo.");
 }
 
-$('panel-cta').addEventListener('click', () => {
-  resetForm();
+function openForm(mode) {
+  formMode = mode;
+  $('f-submit').textContent = mode === 'edit' ? 'Save changes' : 'Plant my flag';
+  show('owner', false);
   show('panel-cta', false);
   show('panel-price-row', false);
   show('claim-form', true);
   $('f-url').focus();
+}
+
+$('panel-cta').addEventListener('click', () => {
+  resetForm();
+  openForm('create');
+});
+
+$('owner-edit').addEventListener('click', () => {
+  const claim = claims.get(selectedCell);
+  resetForm();
+  $('f-url').value = claim.url ?? '';
+  $('f-title').value = claim.title ?? '';
+  $('f-desc').value = claim.description ?? '';
+  $('f-desc-count').textContent = `${$('f-desc').value.length}/100`;
+  if (claim.logo) setFormLogo(claim.logo, 'Your current logo. Change the link or upload a new one.');
+  openForm('edit');
+});
+
+$('owner-copy-link').addEventListener('click', async () => {
+  const link = editLinkFor(selectedCell);
+  if (!link) return;
+  const btn = $('owner-copy-link');
+  try {
+    await navigator.clipboard.writeText(link);
+    btn.textContent = '✅ Copied. Keep this link private.';
+  } catch {
+    btn.textContent = 'Could not copy automatically.';
+  }
+  setTimeout(() => (btn.textContent = '🔗 Copy my private edit link'), 3000);
 });
 $('f-cancel').addEventListener('click', () => selectCell(selectedCell));
 
@@ -386,11 +439,24 @@ $('claim-form').addEventListener('submit', async (e) => {
   const title = $('f-title').value.trim() || link?.domain;
   if (!title) return err('Add a name for your plot.');
   const { lat, lon } = plotInfo(selectedCell);
-  if (priceAt(lat, lon) > 0) return err('Famous plots can only be bought.');
+  if (formMode === 'create' && priceAt(lat, lon) > 0) return err('Famous plots can only be bought.');
   if (link && !formLogo) await lookupLogo(); // submitted before the lookup finished
 
   $('f-submit').disabled = true;
+  if (formMode === 'edit') {
+    try {
+      await updateClaim(claims, selectedCell, { title, description: $('f-desc').value.trim(), url: link?.url ?? '', logo: formLogo });
+      claimLayer.sync(claims);
+      selectCell(selectedCell);
+    } catch (e2) {
+      err(e2.message);
+    } finally {
+      $('f-submit').disabled = false;
+    }
+    return;
+  }
   try {
+    const turnstileToken = await getTurnstileToken();
     await saveClaim(claims, {
       cell: selectedCell,
       title,
@@ -402,7 +468,7 @@ $('claim-form').addEventListener('submit', async (e) => {
       createdAt: new Date().toISOString(),
       // The claim "travels" to Mars at the speed of light, using today's real distance.
       landsAt: new Date(Date.now() + lightDelaySeconds() * 1000).toISOString(),
-    });
+    }, { turnstileToken });
     claimLayer.sync(claims);
     colonies.sync(claims);
     updateClaimedStat();

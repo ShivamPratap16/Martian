@@ -145,7 +145,7 @@ export function createClaimLayer() {
     const tex = await pinTexture(claim.logo.src).catch(() =>
       pinTexture(logoDevUrl(claim.domain || claim.title || 'mars', 'monogram')).catch(() => null)
     );
-    if (!tex) return;
+    if (!tex || pins.get(claim.cell) !== pin) return; // removed while the logo was loading
     const sprite = new THREE.Sprite(
       new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false, opacity: 0 })
     );
@@ -166,7 +166,21 @@ export function createClaimLayer() {
 
     sync(claims) {
       rebuildTint(claims);
-      for (const c of claims.values()) addPin(c);
+      // Drop pins for plots that were rejected, or whose logo changed or went back to review.
+      for (const [cell, pin] of pins) {
+        const c = claims.get(cell);
+        if (c?.logo && c.logo.src === pin.claim.logo?.src) {
+          pin.claim = c;
+          continue;
+        }
+        if (pin.sprite) {
+          group.remove(pin.sprite);
+          pin.sprite.material.map.dispose();
+          pin.sprite.material.dispose();
+        }
+        pins.delete(cell);
+      }
+      for (const c of claims.values()) if (c.logo) addPin(c);
     },
 
     // Call every frame before rendering.

@@ -21,7 +21,9 @@
       <div class="stats">
         <div><strong id="stat-total">–</strong><span>plots</span></div>
         <div><strong id="stat-sold">0</strong><span>claimed</span></div>
-        <div><strong>Free</strong><span>to claim</span></div>
+        <div title="How long a radio signal from Earth takes to reach Mars right now">
+          <strong id="stat-delay">–</strong><span>signal delay</span>
+        </div>
       </div>
     </header>
 
@@ -51,6 +53,7 @@
         <p class="owner-desc" id="owner-desc"></p>
         <a class="cta cta-link" id="owner-visit" target="_blank" rel="nofollow sponsored noopener noreferrer">Visit website ↗</a>
         <div class="owner-since" id="owner-since"></div>
+        <div class="owner-signal hidden" id="owner-signal"></div>
       </section>
 
       <div class="panel-price" id="panel-price-row">
@@ -93,6 +96,22 @@
         <div class="hc-title" id="hc-title"></div>
         <div class="hc-desc" id="hc-desc"></div>
         <div class="hc-domain" id="hc-domain"></div>
+      </div>
+    </div>
+
+    <button class="sound-btn" id="sound-btn" aria-pressed="false">
+      <span class="sound-icon">🔊</span>
+      <span class="sound-text">
+        <strong id="sound-label">Hear Mars</strong>
+        <small id="sound-caption">Real wind recorded by NASA's Perseverance rover</small>
+      </span>
+    </button>
+
+    <div class="toast hidden" id="toast">
+      <div class="toast-icon">📡</div>
+      <div>
+        <strong id="toast-title">Signal sent to Mars</strong>
+        <div id="toast-body"></div>
       </div>
     </div>
 

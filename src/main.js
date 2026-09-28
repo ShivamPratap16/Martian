@@ -14,6 +14,8 @@ import { allPlots, plotAt, plotInfo, createGridLines, createCellHighlight } from
 import { FEATURES, featureAt, priceAt } from './features.js';
 import { loadClaims, saveClaim, myFreeClaim } from './store.js';
 import { createClaimLayer, normalizeUrl, findLogo, logoDevUrl, fileToLogo } from './logos.js';
+import { lightDelaySeconds, formatDuration } from './orbits.js';
+import { createMarsWind } from './sound.js';
 
 // ---------- renderer / scene / camera ----------
 const canvas = document.getElementById('scene');
@@ -233,6 +235,7 @@ function selectCell(cell) {
     $('owner-since').textContent =
       `${claim.free ? 'Founding Settler' : 'Owner'} since ${new Date(claim.createdAt).toLocaleDateString()}` +
       (cell === mine ? ' · this is your plot' : '');
+    updateOwnerSignal();
   } else {
     const cta = $('panel-cta');
     $('panel-price').textContent = price ? `$${price}` : 'Free';
@@ -349,10 +352,13 @@ $('claim-form').addEventListener('submit', async (e) => {
       logo: formLogo,
       free: true,
       createdAt: new Date().toISOString(),
+      // The claim "travels" to Mars at the speed of light, using today's real distance.
+      landsAt: new Date(Date.now() + lightDelaySeconds() * 1000).toISOString(),
     });
     claimLayer.sync(claims);
     updateClaimedStat();
     selectCell(selectedCell);
+    showSignalToast(claims.get(selectedCell));
   } catch (e2) {
     err(e2.message);
   } finally {
@@ -449,6 +455,74 @@ function animate() {
   requestAnimationFrame(animate);
 }
 animate();
+
+// ---------- signal delay (real Earth–Mars light time) ----------
+const secondsUntil = (iso) => (new Date(iso).getTime() - Date.now()) / 1000;
+let toastClaim = null;
+let toastHideTimer = null;
+
+function showSignalToast(claim) {
+  if (!claim?.landsAt) return;
+  toastClaim = claim;
+  clearTimeout(toastHideTimer);
+  $('toast-title').textContent = 'Signal sent to Mars';
+  show('toast', true);
+  updateSignal();
+}
+
+function updateOwnerSignal() {
+  const claim = claims.get(selectedCell);
+  const el = $('owner-signal');
+  if (!claim?.landsAt) return show('owner-signal', false);
+  const left = secondsUntil(claim.landsAt);
+  el.textContent = left > 0 ? `📡 Signal in transit · reaches Mars in ${formatDuration(left)}` : '🟢 Flag landed on Mars';
+  el.classList.toggle('in-transit', left > 0);
+  show('owner-signal', true);
+}
+
+function updateSignal() {
+  $('stat-delay').textContent = formatDuration(lightDelaySeconds());
+  if (!panel.classList.contains('hidden')) updateOwnerSignal();
+  if (toastClaim) {
+    const left = secondsUntil(toastClaim.landsAt);
+    if (left > 0) {
+      $('toast-body').textContent = `Travelling at the speed of light. Your flag reaches Mars in ${formatDuration(left)}.`;
+    } else {
+      $('toast-title').textContent = 'Your flag has landed on Mars';
+      $('toast-body').textContent = `${toastClaim.title} is now part of the Martian map.`;
+      toastClaim = null;
+      toastHideTimer = setTimeout(() => show('toast', false), 8000);
+    }
+  }
+}
+updateSignal();
+setInterval(updateSignal, 1000);
+$('toast').addEventListener('click', () => {
+  toastClaim = null;
+  show('toast', false);
+});
+
+// ---------- real Mars wind ----------
+const wind = createMarsWind();
+$('sound-btn').addEventListener('click', async () => {
+  const btn = $('sound-btn');
+  if (wind.playing) {
+    wind.stop();
+  } else {
+    $('sound-label').textContent = 'Loading…';
+    try {
+      await wind.start();
+    } catch {
+      $('sound-caption').textContent = 'Could not play audio in this browser.';
+    }
+  }
+  btn.setAttribute('aria-pressed', String(wind.playing));
+  btn.querySelector('.sound-icon').textContent = wind.playing ? '🔈' : '🔊';
+  $('sound-label').textContent = wind.playing ? 'Listening to Mars' : 'Hear Mars';
+  $('sound-caption').textContent = wind.playing
+    ? "Recorded at Jezero Crater by NASA's Perseverance rover, 20 Feb 2021"
+    : "Real wind recorded by NASA's Perseverance rover";
+});
 
 if (import.meta.env.DEV) window.__mars = { camera, controls, spin, flyTo };
 

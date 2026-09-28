@@ -176,6 +176,7 @@ export function createClaimLayer() {
       const px = THREE.MathUtils.clamp(THREE.MathUtils.mapLinear(dist, 4, 1.2, 34, 68), 34, 68);
       const pinW = (px * PIN_W) / PIN_H;
       const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
+      const now = Date.now();
       const placed = [];
       const ordered = [...pins.values()]
         .filter((p) => p.sprite)
@@ -206,8 +207,10 @@ export function createClaimLayer() {
             pin.rect = rect;
           }
         }
-        // Fade in/out, and fade out towards the planet's edge.
-        const target = show ? THREE.MathUtils.smoothstep(facing, 0.08, 0.3) : 0;
+        // Fade in/out, and fade out towards the planet's edge. A pin whose signal is
+        // still travelling to Mars pulses faintly until it lands.
+        let target = show ? THREE.MathUtils.smoothstep(facing, 0.08, 0.3) : 0;
+        if (pin.claim.landsAt && Date.parse(pin.claim.landsAt) > now) target *= 0.55 + 0.25 * Math.sin(now / 250);
         const m = sprite.material;
         m.opacity += (target - m.opacity) * Math.min(1, dt * 10);
         sprite.visible = m.opacity > 0.01;

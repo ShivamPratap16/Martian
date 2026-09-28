@@ -19,6 +19,7 @@ import { createMarsWind } from './sound.js';
 import { createColonyLights } from './colony.js';
 import { createLanding } from './landing.js';
 import { canRecord, startRecording } from './recorder.js';
+import { createTerraform, nextMilestone, reachedMilestone } from './terraform.js';
 
 // ---------- renderer / scene / camera ----------
 const canvas = document.getElementById('scene');
@@ -57,10 +58,12 @@ scene.add(planet);
 
 const spin = new THREE.Group();
 planet.add(spin);
-spin.add(createMars(manager, renderer));
+const mars = createMars(manager, renderer);
+spin.add(mars);
 
 const atmosphere = createAtmosphere();
 scene.add(atmosphere.group);
+const terraform = createTerraform({ marsMesh: mars, atmosphere, parent: spin });
 scene.add(createStars());
 
 const moons = createMoons();
@@ -89,6 +92,10 @@ loadClaims().then((c) => {
 });
 function updateClaimedStat() {
   document.getElementById('stat-sold').textContent = claims.size.toLocaleString();
+  if (!terraPreview) {
+    terraform.setCount(claims.size);
+    updateTerraWidget(claims.size);
+  }
 }
 
 let elevationAt = null;
@@ -492,6 +499,60 @@ async function finishCinematic() {
   if (selectedCell === claim.cell) selectCell(claim.cell);
 }
 
+// ---------- terraforming progress ----------
+let terraPreview = null; // { t, from } while "Preview the future" runs
+const PREVIEW_UP = 8;
+const PREVIEW_HOLD = 3.5;
+const PREVIEW_DOWN = 2;
+
+function updateTerraWidget(count, previewing = false) {
+  const total = terraform.total;
+  const pct = (count / total) * 100;
+  document.getElementById('terra-pct').textContent = `${pct < 1 ? pct.toFixed(2) : pct.toFixed(1)}%`;
+  document.getElementById('terra-fill').style.width = `${Math.min(100, pct)}%`;
+  const next = nextMilestone(count);
+  const reached = reachedMilestone(count);
+  let text;
+  if (previewing) text = reached ? `Preview · ${reached.icon} ${reached.name}` : 'Preview · today';
+  else if (next) text = `Next: ${next.icon} ${next.name} at ${next.at.toLocaleString()} settlers · ${(next.at - count).toLocaleString()} to go`;
+  else text = '🌍 Mars is fully terraformed. Thank you, settlers.';
+  document.getElementById('terra-next').textContent = text;
+  document.getElementById('terra').classList.toggle('previewing', previewing);
+}
+
+function updateTerraPreview(dt) {
+  if (!terraPreview) return;
+  const p = terraPreview;
+  p.t += dt;
+  const total = terraform.total;
+  let count;
+  if (p.t < PREVIEW_UP) count = p.from + (total - p.from) * ease(p.t / PREVIEW_UP);
+  else if (p.t < PREVIEW_UP + PREVIEW_HOLD) count = total;
+  else if (p.t < PREVIEW_UP + PREVIEW_HOLD + PREVIEW_DOWN) count = total + (p.from - total) * ease((p.t - PREVIEW_UP - PREVIEW_HOLD) / PREVIEW_DOWN);
+  else {
+    terraPreview = null;
+    document.getElementById('terra-preview').textContent = '▶ Preview the future';
+    updateClaimedStat();
+    return;
+  }
+  terraform.setCount(count);
+  updateTerraWidget(count, true);
+}
+
+document.getElementById('terra-preview').addEventListener('click', () => {
+  if (terraPreview) {
+    terraPreview.t = Math.max(terraPreview.t, PREVIEW_UP + PREVIEW_HOLD); // skip to the way back
+    return;
+  }
+  terraPreview = { t: 0, from: claims.size };
+  document.getElementById('terra-preview').textContent = '■ Back to today';
+  // Pull back so the whole planet is in view.
+  if (camera.position.length() < 2.8) {
+    const { lat, lon } = vec3ToLatLon(spin.worldToLocal(camera.position.clone()));
+    flyTo(lat, lon, 3.4);
+  }
+});
+
 // ---------- per-frame ----------
 // Sun angle from the camera direction: day keeps the visible disk lit, night puts it in shadow.
 const DAY_SUN = 0.95;
@@ -549,6 +610,8 @@ function animate() {
   grid.material.opacity = THREE.MathUtils.clamp(THREE.MathUtils.mapLinear(d, 3.2, 1.5, 0.05, 0.4), 0.05, 0.4);
 
   moons.update(t);
+  updateTerraPreview(dt);
+  terraform.update(dt, t);
   updateLabels();
   claimLayer.update(camera, window.innerWidth, window.innerHeight, dt);
   const shake = landing.update(dt);

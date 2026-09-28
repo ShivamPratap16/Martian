@@ -60,6 +60,7 @@ export function createMars(manager, renderer) {
 export function createAtmosphere() {
   const uniforms = {
     sunDir: { value: new THREE.Vector3(1, 0, 0) },
+    terra: { value: 0 }, // 0 = today's thin dusty air, 1 = thick Earth-like blue sky
   };
 
   const shell = new THREE.Mesh(
@@ -77,15 +78,17 @@ export function createAtmosphere() {
         }`,
       fragmentShader: /* glsl */ `
         uniform vec3 sunDir;
+        uniform float terra;
         varying vec3 vNormal;
         varying vec3 vWorldPos;
         void main() {
           vec3 viewDir = normalize(cameraPosition - vWorldPos);
           float rim = 1.0 - abs(dot(vNormal, viewDir));
-          float glow = pow(smoothstep(0.55, 1.0, rim), 3.0) * (1.0 - smoothstep(0.93, 1.0, rim));
+          float glow = pow(smoothstep(0.55 - terra * 0.15, 1.0, rim), 3.0 - terra) * (1.0 - smoothstep(0.93, 1.0, rim));
           float lit = smoothstep(-0.25, 0.6, dot(vNormal, sunDir));
           vec3 col = mix(vec3(0.85, 0.55, 0.35), vec3(0.55, 0.68, 0.95), smoothstep(0.75, 0.97, rim));
-          gl_FragColor = vec4(col, glow * lit * 0.9);
+          col = mix(col, vec3(0.3, 0.55, 1.0), terra);
+          gl_FragColor = vec4(col, glow * lit * (0.9 + terra * 0.8));
         }`,
       side: THREE.BackSide,
       transparent: true,
@@ -110,13 +113,15 @@ export function createAtmosphere() {
         }`,
       fragmentShader: /* glsl */ `
         uniform vec3 sunDir;
+        uniform float terra;
         varying vec3 vNormal;
         varying vec3 vWorldPos;
         void main() {
           vec3 viewDir = normalize(cameraPosition - vWorldPos);
-          float fres = pow(1.0 - max(dot(vNormal, viewDir), 0.0), 3.0);
+          float fres = pow(1.0 - max(dot(vNormal, viewDir), 0.0), 3.0 - terra);
           float lit = smoothstep(-0.1, 0.5, dot(vNormal, sunDir));
-          gl_FragColor = vec4(vec3(0.6, 0.66, 0.85), fres * lit * 0.35);
+          vec3 col = mix(vec3(0.6, 0.66, 0.85), vec3(0.35, 0.6, 1.0), terra);
+          gl_FragColor = vec4(col, fres * lit * (0.35 + terra * 0.35));
         }`,
       transparent: true,
       blending: THREE.AdditiveBlending,

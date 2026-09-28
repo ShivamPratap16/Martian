@@ -199,3 +199,21 @@ button { font: inherit; color: inherit; }
 
 .cta-secondary { margin-top: 10px; background: none; border: 1px solid var(--accent); color: var(--ink); }
 .cta-secondary:hover { background: rgba(255, 122, 61, 0.12); }
+
+/* ---------- terraforming ---------- */
+.terra {
+  position: fixed; left: 16px; top: 172px; width: 250px; padding: 12px 14px; border-radius: 14px;
+  background: var(--glass); border: 1px solid var(--line); backdrop-filter: blur(10px); font-size: 12px;
+}
+.terra.previewing { border-color: #5aa8ff; }
+.terra-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; }
+.terra-head strong { font-size: 15px; }
+.terra-bar { height: 6px; margin: 8px 0; border-radius: 3px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+.terra-fill { height: 100%; width: 0; min-width: 3px; border-radius: 3px; background: linear-gradient(90deg, #ff7a3d, #6fd08c 60%, #5aa8ff); }
+.terra-next { color: var(--muted); line-height: 1.4; min-height: 17px; }
+.terra .link-btn { margin-top: 8px; font-size: 12px; }
+
+@media (max-width: 640px) {
+  .terra { top: auto; bottom: 150px; left: 16px; right: 16px; width: auto; padding: 8px 12px; }
+  .terra-next { display: none; }
+}

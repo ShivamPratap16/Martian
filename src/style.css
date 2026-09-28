@@ -196,3 +196,6 @@ button { font: inherit; color: inherit; }
   .night-btn { top: 104px; }
   .toast { top: auto; bottom: 100px; }
 }
+
+.cta-secondary { margin-top: 10px; background: none; border: 1px solid var(--accent); color: var(--ink); }
+.cta-secondary:hover { background: rgba(255, 122, 61, 0.12); }

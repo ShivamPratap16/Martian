@@ -140,7 +140,7 @@ export function createClaimLayer() {
 
   async function addPin(claim) {
     if (pins.has(claim.cell)) return;
-    const pin = { sprite: null, claim, rect: null };
+    const pin = { sprite: null, claim, rect: null, popAt: 0 };
     pins.set(claim.cell, pin);
     const tex = await pinTexture(claim.logo.src).catch(() =>
       pinTexture(logoDevUrl(claim.domain || claim.title || 'mars', 'monogram')).catch(() => null)
@@ -189,11 +189,15 @@ export function createClaimLayer() {
         const camDist = toCam.length();
         const facing = normal.copy(world).normalize().dot(toCam.divideScalar(camDist));
 
+        // Pops in with an elastic bounce after a landing (see holdPin).
+        const popT = (now - pin.popAt) / 700;
+        const pop = popT < 0 ? 0 : popT < 1 ? 1 + Math.sin(popT * Math.PI * 2.5) * 0.35 * (1 - popT) : 1;
+
         // World size that projects to `px` pixels at this distance.
-        const h = (px * 2 * camDist * Math.tan(halfFov)) / height;
+        const h = (px * pop * 2 * camDist * Math.tan(halfFov)) / height;
         sprite.scale.set((h * PIN_W) / PIN_H, h, 1);
 
-        let show = facing > 0.08;
+        let show = facing > 0.08 && popT >= 0;
         pin.rect = null;
         if (show) {
           ndc.copy(world).project(camera);
@@ -212,9 +216,15 @@ export function createClaimLayer() {
         let target = show ? THREE.MathUtils.smoothstep(facing, 0.08, 0.3) : 0;
         if (pin.claim.landsAt && Date.parse(pin.claim.landsAt) > now) target *= 0.55 + 0.25 * Math.sin(now / 250);
         const m = sprite.material;
-        m.opacity += (target - m.opacity) * Math.min(1, dt * 10);
+        m.opacity = popT >= 0 && popT < 1 ? target : m.opacity + (target - m.opacity) * Math.min(1, dt * 10);
         sprite.visible = m.opacity > 0.01;
       }
+    },
+
+    // Keeps a pin hidden until `time` (ms since epoch), then pops it in.
+    holdPin(cell, time) {
+      const pin = pins.get(cell);
+      if (pin) pin.popAt = time;
     },
 
     // The claim whose pin is under the given screen point, if any.

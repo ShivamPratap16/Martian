@@ -17,6 +17,8 @@ import { createClaimLayer, normalizeUrl, findLogo, logoDevUrl, fileToLogo } from
 import { lightDelaySeconds, formatDuration } from './orbits.js';
 import { createMarsWind } from './sound.js';
 import { createColonyLights } from './colony.js';
+import { createLanding } from './landing.js';
+import { canRecord, startRecording } from './recorder.js';
 
 // ---------- renderer / scene / camera ----------
 const canvas = document.getElementById('scene');
@@ -240,6 +242,12 @@ function selectCell(cell) {
       `${claim.free ? 'Founding Settler' : 'Owner'} since ${new Date(claim.createdAt).toLocaleDateString()}` +
       (cell === mine ? ' · this is your plot' : '');
     updateOwnerSignal();
+    const video = videos.get(cell);
+    show('owner-video', !!video);
+    if (video) {
+      $('owner-video').href = video.url;
+      $('owner-video').download = `my-plot-on-mars.${video.ext}`;
+    }
   } else {
     const cta = $('panel-cta');
     $('panel-price').textContent = price ? `$${price}` : 'Free';
@@ -364,6 +372,7 @@ $('claim-form').addEventListener('submit', async (e) => {
     updateClaimedStat();
     selectCell(selectedCell);
     showSignalToast(claims.get(selectedCell));
+    playLanding(claims.get(selectedCell));
   } catch (e2) {
     err(e2.message);
   } finally {
@@ -407,6 +416,82 @@ function updateFlight(dt) {
   if (flight.t >= 1) flight = null;
 }
 
+// ---------- landing cinematic ----------
+// After a claim: swoop down to an angled shot of the plot, watch the lander touch down,
+// then pull back out to orbit. The whole sequence is recorded as a shareable clip.
+const landing = createLanding(spin);
+const CINE_IN = 1.8;
+const CINE_OUT = 1.6;
+const ease = (x) => (x < 0.5 ? 4 * x ** 3 : 1 - (-2 * x + 2) ** 3 / 2);
+const origin = new THREE.Vector3();
+const lookAt = new THREE.Vector3();
+let cine = null;
+const videos = new Map(); // cell -> { url, ext }
+
+function playLanding(claim) {
+  const { lat, lon } = plotInfo(claim.cell);
+  spin.updateMatrixWorld();
+  const p = spin.localToWorld(latLonToVec3(lat, lon, 1));
+  const n = p.clone().normalize();
+  // Film from the south side of the plot so the horizon sits at the top of the frame.
+  const north = new THREE.Vector3(0, 1, 0).addScaledVector(n, -n.y);
+  if (north.lengthSq() < 1e-4) north.set(1, 0, 0).addScaledVector(n, -n.x);
+  north.normalize();
+  const shot = p.clone().addScaledVector(n, 0.16).addScaledVector(north, -0.2);
+
+  userActive();
+  controls.enabled = false;
+  claimLayer.holdPin(claim.cell, Infinity);
+  let recording = null;
+  try {
+    if (canRecord())
+      recording = startRecording(canvas, {
+        headline: `${claim.title} just landed on Mars`,
+        subline: `${fmtLat(lat)}, ${fmtLon(lon)} · ${location.host}`,
+      });
+  } catch {
+    recording = null; // recording is a bonus; the landing still plays
+  }
+  cine = { t: 0, p, n, shot, from: camera.position.clone(), outFrom: null, outStart: 0, recording, claim };
+  landing
+    .play(claim.cell, { delay: CINE_IN, touchdown: () => claimLayer.holdPin(claim.cell, Date.now()) })
+    .then(() => {
+      cine.outStart = cine.t;
+      cine.outFrom = camera.position.clone();
+    });
+}
+
+function updateCinematic(dt) {
+  if (!cine) return false;
+  cine.t += dt;
+  if (!cine.outFrom) {
+    const k = ease(Math.min(1, cine.t / CINE_IN));
+    // Slow drift around the plot while the lander comes down.
+    const drift = cine.shot.clone().sub(cine.p).applyAxisAngle(cine.n, cine.t * 0.05).add(cine.p);
+    camera.position.lerpVectors(cine.from, drift, k);
+    lookAt.lerpVectors(origin, cine.p, k);
+  } else {
+    const k = ease(Math.min(1, (cine.t - cine.outStart) / CINE_OUT));
+    camera.position.lerpVectors(cine.outFrom, cine.n.clone().multiplyScalar(1.6), k);
+    lookAt.lerpVectors(cine.p, origin, k);
+    if (k >= 1) finishCinematic();
+  }
+  if (camera.position.length() < 1.03) camera.position.setLength(1.03);
+  camera.lookAt(lookAt);
+  idleSince = performance.now();
+  return true;
+}
+
+async function finishCinematic() {
+  const { recording, claim } = cine;
+  cine = null;
+  controls.enabled = true;
+  if (!recording) return;
+  const { blob, ext } = await recording.stop();
+  videos.set(claim.cell, { url: URL.createObjectURL(blob), ext });
+  if (selectedCell === claim.cell) selectCell(claim.cell);
+}
+
 // ---------- per-frame ----------
 // Sun angle from the camera direction: day keeps the visible disk lit, night puts it in shadow.
 const DAY_SUN = 0.95;
@@ -440,12 +525,13 @@ function animate() {
   const dt = Math.min(clock.getDelta(), 0.1);
   const t = clock.elapsedTime;
 
-  updateFlight(dt);
-  // Slow sidereal-ish spin while idle.
-  if (performance.now() - idleSince > 6000 && panel.classList.contains('hidden')) spin.rotation.y += dt * 0.03;
-
-  controls.rotateSpeed = THREE.MathUtils.clamp((camera.position.length() - 1) * 0.5, 0.08, 0.8);
-  controls.update();
+  if (!updateCinematic(dt)) {
+    updateFlight(dt);
+    // Slow sidereal-ish spin while idle.
+    if (performance.now() - idleSince > 6000 && panel.classList.contains('hidden')) spin.rotation.y += dt * 0.03;
+    controls.rotateSpeed = THREE.MathUtils.clamp((camera.position.length() - 1) * 0.5, 0.08, 0.8);
+    controls.update();
+  }
 
   // Sun sits off to the side of the camera so the visible disk shows a day/night terminator.
   // Night view swings the sun around behind Mars so the colony lights come out.
@@ -465,7 +551,11 @@ function animate() {
   moons.update(t);
   updateLabels();
   claimLayer.update(camera, window.innerWidth, window.innerHeight, dt);
+  const shake = landing.update(dt);
+  camera.position.add(shake);
   renderer.render(scene, camera);
+  camera.position.sub(shake);
+  cine?.recording?.frame();
   requestAnimationFrame(animate);
 }
 animate();

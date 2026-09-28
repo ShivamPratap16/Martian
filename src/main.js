@@ -16,6 +16,7 @@ import { loadClaims, saveClaim, myFreeClaim } from './store.js';
 import { createClaimLayer, normalizeUrl, findLogo, logoDevUrl, fileToLogo } from './logos.js';
 import { lightDelaySeconds, formatDuration } from './orbits.js';
 import { createMarsWind } from './sound.js';
+import { createColonyLights } from './colony.js';
 
 // ---------- renderer / scene / camera ----------
 const canvas = document.getElementById('scene');
@@ -75,10 +76,13 @@ spin.add(hover.object, selected.object);
 
 const claimLayer = createClaimLayer();
 spin.add(claimLayer.object);
+const colonies = createColonyLights();
+spin.add(colonies.object);
 let claims = new Map();
 loadClaims().then((c) => {
   claims = c;
   claimLayer.sync(claims);
+  colonies.sync(claims);
   updateClaimedStat();
 });
 function updateClaimedStat() {
@@ -356,6 +360,7 @@ $('claim-form').addEventListener('submit', async (e) => {
       landsAt: new Date(Date.now() + lightDelaySeconds() * 1000).toISOString(),
     });
     claimLayer.sync(claims);
+    colonies.sync(claims);
     updateClaimedStat();
     selectCell(selectedCell);
     showSignalToast(claims.get(selectedCell));
@@ -403,6 +408,11 @@ function updateFlight(dt) {
 }
 
 // ---------- per-frame ----------
+// Sun angle from the camera direction: day keeps the visible disk lit, night puts it in shadow.
+const DAY_SUN = 0.95;
+const NIGHT_SUN = 2.75;
+let sunAngle = DAY_SUN;
+let sunTarget = DAY_SUN;
 const clock = new THREE.Clock();
 const up = new THREE.Vector3(0, 1, 0);
 const sunDir = new THREE.Vector3();
@@ -438,11 +448,15 @@ function animate() {
   controls.update();
 
   // Sun sits off to the side of the camera so the visible disk shows a day/night terminator.
-  sunDir.copy(camera.position).normalize().applyAxisAngle(up, 0.95);
+  // Night view swings the sun around behind Mars so the colony lights come out.
+  sunAngle += (sunTarget - sunAngle) * Math.min(1, dt * 2.2);
+  sunDir.copy(camera.position).normalize().applyAxisAngle(up, sunAngle);
   sunDir.y += 0.25;
   sunDir.normalize();
   sun.position.copy(sunDir).multiplyScalar(10);
   atmosphere.uniforms.sunDir.value.copy(sunDir);
+  colonies.uniforms.sunDir.value.copy(sunDir);
+  colonies.uniforms.time.value = t;
 
   // Grid fades in as you zoom closer.
   const d = camera.position.length();
@@ -502,6 +516,15 @@ $('toast').addEventListener('click', () => {
   show('toast', false);
 });
 
+// ---------- night view ----------
+$('night-btn').addEventListener('click', () => {
+  const night = sunTarget === DAY_SUN;
+  sunTarget = night ? NIGHT_SUN : DAY_SUN;
+  $('night-btn').setAttribute('aria-pressed', String(night));
+  $('night-label').textContent = night ? 'Day view' : 'Night view';
+  $('night-btn').querySelector('.sound-icon').textContent = night ? '☀️' : '🌙';
+});
+
 // ---------- real Mars wind ----------
 const wind = createMarsWind();
 $('sound-btn').addEventListener('click', async () => {
@@ -524,7 +547,20 @@ $('sound-btn').addEventListener('click', async () => {
     : "Real wind recorded by NASA's Perseverance rover";
 });
 
-if (import.meta.env.DEV) window.__mars = { camera, controls, spin, flyTo };
+if (import.meta.env.DEV) {
+  window.__mars = {
+    camera,
+    controls,
+    spin,
+    flyTo,
+    // Preview a busy Mars: __mars.previewColonies(5000). Visual only, nothing is saved.
+    previewColonies(n) {
+      const pick = new Set();
+      while (pick.size < Math.min(n, cells.length)) pick.add(cells[Math.floor(Math.random() * cells.length)]);
+      colonies.preview([...pick, ...claims.keys()]);
+    },
+  };
+}
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;

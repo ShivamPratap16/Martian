@@ -64,31 +64,46 @@ export async function fileToLogo(file) {
   }
 }
 
-// Draws the logo on a round light badge so dark and transparent logos stay readable on the terrain.
-async function badgeTexture(src) {
+// Draws a map pin: a round light badge holding the logo, with a tail pointing at the plot.
+// The light background keeps dark and transparent logos readable on the terrain.
+const PIN_W = 128;
+const PIN_H = 160;
+async function pinTexture(src) {
   const img = await loadImage(src);
-  const s = 256;
   const c = document.createElement('canvas');
-  c.width = c.height = s;
+  c.width = PIN_W;
+  c.height = PIN_H;
   const ctx = c.getContext('2d');
+  const r = 58;
+  const cx = PIN_W / 2;
+  const cy = r + 4;
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+  ctx.shadowBlur = 8;
+  ctx.fillStyle = '#ff7a3d';
   ctx.beginPath();
-  ctx.arc(s / 2, s / 2, s / 2 - 4, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(250, 244, 238, 0.95)';
+  ctx.moveTo(cx - 16, cy + r - 8);
+  ctx.lineTo(cx, PIN_H - 2);
+  ctx.lineTo(cx + 16, cy + r - 8);
+  ctx.closePath();
   ctx.fill();
-  ctx.lineWidth = 6;
-  ctx.strokeStyle = 'rgba(255, 122, 61, 0.9)';
-  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowColor = 'transparent';
+  ctx.beginPath();
+  ctx.arc(cx, cy, r - 6, 0, Math.PI * 2);
+  ctx.fillStyle = '#faf4ee';
+  ctx.fill();
   ctx.save();
   ctx.clip();
-  const box = s * 0.62;
+  const box = r * 1.25;
   const k = Math.min(box / img.width, box / img.height);
   const w = img.width * k;
   const h = img.height * k;
-  ctx.drawImage(img, (s - w) / 2, (s - h) / 2, w, h);
+  ctx.drawImage(img, cx - w / 2, cy - h / 2, w, h);
   ctx.restore();
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 4;
   return tex;
 }
 
@@ -103,8 +118,9 @@ export function cellFill(cell, r) {
   return { center: new THREE.Vector3(...center), ring: ring.map((p) => new THREE.Vector3(...p)), tris };
 }
 
-// Claimed plots: a warm tint on every claimed hex (visible from far away) and a logo badge
-// lying flat on the surface (readable when zoomed in).
+// Claimed plots: a warm tint on every claimed hex, plus a logo pin standing on it.
+// Pins keep a fixed size on screen so logos stay readable from orbit; when pins would
+// overlap, the older claims win and the rest fade out until you zoom in.
 export function createClaimLayer() {
   const group = new THREE.Group();
   const tint = new THREE.Mesh(
@@ -112,9 +128,7 @@ export function createClaimLayer() {
     new THREE.MeshBasicMaterial({ color: 0xffb27a, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide })
   );
   group.add(tint);
-  const badges = new Map();
-  const up = new THREE.Vector3(0, 1, 0);
-  const alt = new THREE.Vector3(1, 0, 0);
+  const pins = new Map(); // cell -> { sprite, claim, rect }; sprite is null while the logo loads
 
   function rebuildTint(claims) {
     const pts = [];
@@ -124,39 +138,90 @@ export function createClaimLayer() {
     tint.geometry.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
   }
 
-  async function addBadge(claim) {
-    if (badges.has(claim.cell)) return;
-    badges.set(claim.cell, null);
-    const { center, ring } = cellFill(claim.cell, GRID_RADIUS + 0.0008);
-    // Inscribed circle of the hex, so the round badge never spills over the edges.
-    const inner = Math.min(...ring.map((p) => p.distanceTo(center))) * Math.cos(Math.PI / 6);
-    let tex;
-    try {
-      tex = await badgeTexture(claim.logo.src);
-    } catch {
-      tex = await badgeTexture(logoDevUrl(claim.domain || claim.title || 'mars', 'monogram')).catch(() => null);
-    }
-    if (!tex) return;
-    const mesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(inner * 1.9, inner * 1.9),
-      new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false })
+  async function addPin(claim) {
+    if (pins.has(claim.cell)) return;
+    const pin = { sprite: null, claim, rect: null };
+    pins.set(claim.cell, pin);
+    const tex = await pinTexture(claim.logo.src).catch(() =>
+      pinTexture(logoDevUrl(claim.domain || claim.title || 'mars', 'monogram')).catch(() => null)
     );
-    // Lay the badge flat on the surface with its top pointing north.
-    const n = center.clone().normalize();
-    const east = new THREE.Vector3().crossVectors(Math.abs(n.y) > 0.99 ? alt : up, n).normalize();
-    const north = new THREE.Vector3().crossVectors(n, east);
-    mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(east, north, n));
-    mesh.position.copy(center);
-    mesh.renderOrder = 2;
-    group.add(mesh);
-    badges.set(claim.cell, mesh);
+    if (!tex) return;
+    const sprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false, opacity: 0 })
+    );
+    sprite.center.set(0.5, 0); // tail tip sits on the plot
+    sprite.position.copy(cellFill(claim.cell, GRID_RADIUS).center);
+    sprite.renderOrder = 10;
+    group.add(sprite);
+    pin.sprite = sprite;
   }
+
+  const world = new THREE.Vector3();
+  const normal = new THREE.Vector3();
+  const toCam = new THREE.Vector3();
+  const ndc = new THREE.Vector3();
 
   return {
     object: group,
+
     sync(claims) {
       rebuildTint(claims);
-      for (const c of claims.values()) addBadge(c);
+      for (const c of claims.values()) addPin(c);
+    },
+
+    // Call every frame before rendering.
+    update(camera, width, height, dt) {
+      const dist = camera.position.length();
+      // Pin height in pixels: compact from orbit, bigger when zoomed in.
+      const px = THREE.MathUtils.clamp(THREE.MathUtils.mapLinear(dist, 4, 1.2, 34, 68), 34, 68);
+      const pinW = (px * PIN_W) / PIN_H;
+      const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
+      const placed = [];
+      const ordered = [...pins.values()]
+        .filter((p) => p.sprite)
+        .sort((a, b) => a.claim.createdAt.localeCompare(b.claim.createdAt));
+
+      for (const pin of ordered) {
+        const { sprite } = pin;
+        sprite.getWorldPosition(world);
+        toCam.subVectors(camera.position, world);
+        const camDist = toCam.length();
+        const facing = normal.copy(world).normalize().dot(toCam.divideScalar(camDist));
+
+        // World size that projects to `px` pixels at this distance.
+        const h = (px * 2 * camDist * Math.tan(halfFov)) / height;
+        sprite.scale.set((h * PIN_W) / PIN_H, h, 1);
+
+        let show = facing > 0.08;
+        pin.rect = null;
+        if (show) {
+          ndc.copy(world).project(camera);
+          const x = (ndc.x * 0.5 + 0.5) * width;
+          const y = (-ndc.y * 0.5 + 0.5) * height;
+          const rect = { x0: x - pinW / 2, x1: x + pinW / 2, y0: y - px, y1: y };
+          const pad = 4;
+          show = !placed.some((r) => rect.x0 < r.x1 + pad && rect.x1 > r.x0 - pad && rect.y0 < r.y1 + pad && rect.y1 > r.y0 - pad);
+          if (show) {
+            placed.push(rect);
+            pin.rect = rect;
+          }
+        }
+        // Fade in/out, and fade out towards the planet's edge.
+        const target = show ? THREE.MathUtils.smoothstep(facing, 0.08, 0.3) : 0;
+        const m = sprite.material;
+        m.opacity += (target - m.opacity) * Math.min(1, dt * 10);
+        sprite.visible = m.opacity > 0.01;
+      }
+    },
+
+    // The claim whose pin is under the given screen point, if any.
+    pinAt(x, y) {
+      let hit = null;
+      for (const pin of pins.values()) {
+        const r = pin.rect;
+        if (r && pin.sprite.material.opacity > 0.5 && x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1) hit = pin.claim;
+      }
+      return hit;
     },
   };
 }

@@ -126,9 +126,16 @@ function pickLatLon(clientX, clientY) {
 
 let hoverCell = null;
 const hovercard = document.getElementById('hovercard');
+// A logo pin stands above its plot, so check pins before the ground under the cursor.
+function pickCell(x, y) {
+  const pinned = claimLayer.pinAt(x, y);
+  if (pinned) return pinned.cell;
+  const ll = pickLatLon(x, y);
+  return ll ? plotAt(ll.lat, ll.lon) : null;
+}
+
 canvas.addEventListener('pointermove', (e) => {
-  const ll = pickLatLon(e.clientX, e.clientY);
-  const cell = ll ? plotAt(ll.lat, ll.lon) : null;
+  const cell = pickCell(e.clientX, e.clientY);
   if (cell !== hoverCell) {
     hoverCell = cell;
     hover.set(cell);
@@ -168,8 +175,7 @@ canvas.addEventListener('pointerdown', (e) => {
 });
 canvas.addEventListener('pointerup', (e) => {
   if (!downAt || Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 5) return;
-  const ll = pickLatLon(e.clientX, e.clientY);
-  selectCell(ll ? plotAt(ll.lat, ll.lon) : null);
+  selectCell(pickCell(e.clientX, e.clientY));
 });
 canvas.addEventListener('wheel', userActive, { passive: true });
 
@@ -438,6 +444,7 @@ function animate() {
 
   moons.update(t);
   updateLabels();
+  claimLayer.update(camera, window.innerWidth, window.innerHeight, dt);
   renderer.render(scene, camera);
   requestAnimationFrame(animate);
 }

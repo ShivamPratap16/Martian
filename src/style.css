@@ -217,3 +217,10 @@ button { font: inherit; color: inherit; }
   .terra { top: auto; bottom: 150px; left: 16px; right: 16px; width: auto; padding: 8px 12px; }
   .terra-next { display: none; }
 }
+
+/* ---------- landing cinematic ---------- */
+#fx { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; }
+.topbar, .features, #labels, .sound-btn, .terra, .panel, .hint, .disclaimer, .toast, .hovercard { transition: opacity 0.6s; }
+body.cinematic .topbar, body.cinematic .features, body.cinematic #labels, body.cinematic .sound-btn,
+body.cinematic .terra, body.cinematic .panel, body.cinematic .hint, body.cinematic .disclaimer,
+body.cinematic .toast, body.cinematic .hovercard { opacity: 0 !important; pointer-events: none !important; }

@@ -54,6 +54,13 @@ export function lightDelaySeconds(date = new Date()) {
   return (earthMarsDistanceAU(date) * AU_KM) / C_KM_S;
 }
 
+// Mars Sol Date (NASA GISS Mars24 algorithm): days on Mars since 29 Dec 1873.
+export function marsSolDate(date = new Date()) {
+  const jdUT = date.getTime() / 86400000 + 2440587.5;
+  const jdTT = jdUT + (37 + 32.184) / 86400;
+  return (jdTT - 2405522.0028779) / 1.0274912517;
+}
+
 export function formatDuration(seconds) {
   const s = Math.max(0, Math.round(seconds));
   const m = Math.floor(s / 60);

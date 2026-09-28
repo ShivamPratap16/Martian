@@ -7,6 +7,7 @@ import {
   createStars,
   createMoons,
   loadElevationSampler,
+  loadColorSampler,
   latLonToVec3,
   vec3ToLatLon,
 } from './planet.js';
@@ -14,11 +15,13 @@ import { allPlots, plotAt, plotInfo, createGridLines, createCellHighlight } from
 import { FEATURES, featureAt, priceAt } from './features.js';
 import { loadClaims, saveClaim, myFreeClaim } from './store.js';
 import { createClaimLayer, normalizeUrl, findLogo, logoDevUrl, fileToLogo } from './logos.js';
-import { lightDelaySeconds, formatDuration } from './orbits.js';
+import { lightDelaySeconds, formatDuration, marsSolDate } from './orbits.js';
 import { createMarsWind } from './sound.js';
 import { createColonyLights } from './colony.js';
-import { createLanding } from './landing.js';
 import { canRecord, startRecording } from './recorder.js';
+import { createLandingSequence } from './landing/sequence.js';
+import { createLandingAudio } from './landing/audio.js';
+import { drawOverlay } from './landing/overlay.js';
 import { createTerraform, nextMilestone, reachedMilestone } from './terraform.js';
 
 // ---------- renderer / scene / camera ----------
@@ -28,6 +31,8 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.15;
+renderer.shadowMap.enabled = true; // only the ground-level landing scene casts shadows
+renderer.shadowMap.type = THREE.PCFShadowMap;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x020203);
@@ -100,6 +105,8 @@ function updateClaimedStat() {
 
 let elevationAt = null;
 loadElevationSampler().then((fn) => (elevationAt = fn));
+let colorAt = null;
+loadColorSampler().then((fn) => (colorAt = fn));
 
 // ---------- landmark labels ----------
 const labelsEl = document.getElementById('labels');
@@ -349,6 +356,7 @@ $('f-desc').addEventListener('input', () => {
 
 $('claim-form').addEventListener('submit', async (e) => {
   e.preventDefault();
+  landingAudio.unlock(); // browsers only allow sound that starts from a click
   const rawUrl = $('f-url').value.trim();
   const link = normalizeUrl(rawUrl);
   const err = (msg) => ($('f-error').textContent = msg);
@@ -424,75 +432,152 @@ function updateFlight(dt) {
 }
 
 // ---------- landing cinematic ----------
-// After a claim: swoop down to an angled shot of the plot, watch the lander touch down,
-// then pull back out to orbit. The whole sequence is recorded as a shareable clip.
-const landing = createLanding(spin);
-const CINE_IN = 1.8;
-const CINE_OUT = 1.6;
+// After a claim: dive from orbit into the haze, cut to a ground-level sky-crane landing
+// on the plot, then pull back out to orbit where the pin pops in, and close on an end
+// card. The whole thing, sound included, is recorded as a shareable square clip.
+const sequence = createLandingSequence(renderer);
+const landingAudio = createLandingAudio();
+const CINE_DIVE = 2.2;
+const CINE_RETURN = 1.8;
+const END_CARD_AT = 0.7; // seconds into the return
+const END_HOLD = 3.2; // seconds the end card stays after the camera settles
 const ease = (x) => (x < 0.5 ? 4 * x ** 3 : 1 - (-2 * x + 2) ** 3 / 2);
 const origin = new THREE.Vector3();
 const lookAt = new THREE.Vector3();
 let cine = null;
 const videos = new Map(); // cell -> { url, ext }
 
+const fxCanvas = document.getElementById('fx');
+const fxCtx = fxCanvas.getContext('2d');
+function drawFx() {
+  const dpr = Math.min(window.devicePixelRatio, 2);
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  if (fxCanvas.width !== Math.round(w * dpr) || fxCanvas.height !== Math.round(h * dpr)) {
+    fxCanvas.width = Math.round(w * dpr);
+    fxCanvas.height = Math.round(h * dpr);
+  }
+  fxCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  fxCtx.clearRect(0, 0, w, h);
+  drawOverlay(fxCtx, w, h, cine?.fx);
+}
+
+function loadImg(src) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
 function playLanding(claim) {
   const { lat, lon } = plotInfo(claim.cell);
   spin.updateMatrixWorld();
   const p = spin.localToWorld(latLonToVec3(lat, lon, 1));
   const n = p.clone().normalize();
-  // Film from the south side of the plot so the horizon sits at the top of the frame.
+  // Approach from the south so the horizon sits at the top of the frame.
   const north = new THREE.Vector3(0, 1, 0).addScaledVector(n, -n.y);
   if (north.lengthSq() < 1e-4) north.set(1, 0, 0).addScaledVector(n, -n.x);
   north.normalize();
-  const shot = p.clone().addScaledVector(n, 0.16).addScaledVector(north, -0.2);
 
   userActive();
   controls.enabled = false;
+  document.body.classList.add('cinematic');
   claimLayer.holdPin(claim.cell, Infinity);
+  landingAudio.start();
+
+  const fx = {
+    fade: 0,
+    hud: null,
+    end: {
+      k: 0,
+      logoImg: null,
+      title: claim.title,
+      subline: `${fmtLat(lat)}, ${fmtLon(lon)} · Sol ${Math.floor(marsSolDate()).toLocaleString()}`,
+      cta: `Claim your free plot → ${location.host}`,
+    },
+  };
+  loadImg(claim.logo.src).then((img) => (fx.end.logoImg = img));
+
   let recording = null;
   try {
-    if (canRecord())
-      recording = startRecording(canvas, {
-        headline: `${claim.title} just landed on Mars`,
-        subline: `${fmtLat(lat)}, ${fmtLon(lon)} · ${location.host}`,
-      });
+    if (canRecord()) recording = startRecording(canvas, { overlay: (ctx, size) => drawOverlay(ctx, size, size, fx), audioStream: landingAudio.stream });
   } catch {
-    recording = null; // recording is a bonus; the landing still plays
+    recording = null; // the video is a bonus; the landing still plays
   }
-  cine = { t: 0, p, n, shot, from: camera.position.clone(), outFrom: null, outStart: 0, recording, claim };
-  landing
-    .play(claim.cell, { delay: CINE_IN, touchdown: () => claimLayer.holdPin(claim.cell, Date.now()) })
-    .then(() => {
-      cine.outStart = cine.t;
-      cine.outFrom = camera.position.clone();
-    });
+
+  cine = {
+    phase: 'dive', t: 0, p, n, north, fx, claim, recording, ready: false,
+    from: camera.position.clone(),
+    // Dive target: just above the plot, looking down at a steep angle.
+    near: p.clone().addScaledVector(n, 0.035).addScaledVector(north, -0.03),
+  };
+  const groundColor = colorAt ? colorAt(lat, lon) : new THREE.Color(0.55, 0.3, 0.18);
+  sequence
+    .prepare({ cell: claim.cell, groundColor, logoSrc: claim.logo.src, title: claim.title })
+    .then(() => cine && (cine.ready = true));
 }
 
+function onLandingEvent(name, value) {
+  if (name === 'thrust') landingAudio.setThrust(value);
+  else if (name === 'thud') landingAudio.thud();
+  else if (name === 'snap') landingAudio.snap();
+  else if (name === 'whoosh') landingAudio.whoosh();
+}
+
+// Orbit-side camera for the dive and the return. Returns true while it owns the camera.
 function updateCinematic(dt) {
-  if (!cine) return false;
+  if (!cine || cine.phase === 'ground') return !!cine;
   cine.t += dt;
-  if (!cine.outFrom) {
-    const k = ease(Math.min(1, cine.t / CINE_IN));
-    // Slow drift around the plot while the lander comes down.
-    const drift = cine.shot.clone().sub(cine.p).applyAxisAngle(cine.n, cine.t * 0.05).add(cine.p);
-    camera.position.lerpVectors(cine.from, drift, k);
-    lookAt.lerpVectors(origin, cine.p, k);
-  } else {
-    const k = ease(Math.min(1, (cine.t - cine.outStart) / CINE_OUT));
-    camera.position.lerpVectors(cine.outFrom, cine.n.clone().multiplyScalar(1.6), k);
+  if (cine.phase === 'dive') {
+    const k = ease(Math.min(1, cine.t / CINE_DIVE));
+    camera.position.lerpVectors(cine.from, cine.near, k);
+    lookAt.lerpVectors(origin, cine.p, Math.min(1, k * 1.4));
+    // Entry haze builds up over the last part of the dive.
+    cine.fx.fade = Math.min(1, Math.max(0, (cine.t - (CINE_DIVE - 0.7)) / 0.6));
+    if (cine.t >= CINE_DIVE && cine.ready) {
+      cine.phase = 'ground';
+      cine.t = 0;
+      cine.fx.hud = sequence.hud;
+    }
+  } else if (cine.phase === 'return') {
+    const k = ease(Math.min(1, cine.t / CINE_RETURN));
+    const start = cine.p.clone().addScaledVector(cine.n, 0.3).addScaledVector(cine.north, -0.25);
+    camera.position.lerpVectors(start, cine.n.clone().multiplyScalar(1.75), k);
     lookAt.lerpVectors(cine.p, origin, k);
-    if (k >= 1) finishCinematic();
+    cine.fx.fade = Math.max(0, 1 - cine.t / 0.5);
+    cine.fx.end.k = Math.max(0, (cine.t - END_CARD_AT) / 0.6);
+    if (cine.t >= CINE_RETURN + END_HOLD) finishCinematic();
   }
-  if (camera.position.length() < 1.03) camera.position.setLength(1.03);
-  camera.lookAt(lookAt);
+  if (cine) {
+    if (camera.position.length() < 1.012) camera.position.setLength(1.012);
+    camera.lookAt(lookAt);
+  }
   idleSince = performance.now();
   return true;
+}
+
+function startReturn() {
+  sequence.dispose();
+  cine.phase = 'return';
+  cine.t = 0;
+  cine.fx.hud = null;
+  cine.fx.fade = 1;
+  camera.fov = 40;
+  camera.updateProjectionMatrix();
+  claimLayer.holdPin(cine.claim.cell, Date.now() + 250);
+  landingAudio.setThrust(0);
 }
 
 async function finishCinematic() {
   const { recording, claim } = cine;
   cine = null;
   controls.enabled = true;
+  document.body.classList.remove('cinematic');
+  drawFx();
+  landingAudio.stop(0.6);
   if (!recording) return;
   const { blob, ext } = await recording.stop();
   videos.set(claim.cell, { url: URL.createObjectURL(blob), ext });
@@ -582,9 +667,21 @@ function updateLabels() {
   }
 }
 
-function animate() {
-  const dt = Math.min(clock.getDelta(), 0.1);
-  const t = clock.elapsedTime;
+let simTime = 0;
+
+// One frame of the whole app, advanced by dt seconds.
+function frame(dt) {
+  const t = (simTime += dt);
+
+  // During the ground-level landing the planet isn't drawn at all.
+  if (cine?.phase === 'ground') {
+    const running = sequence.update(dt, onLandingEvent);
+    cine.fx.fade = sequence.fade;
+    drawFx();
+    cine.recording?.frame();
+    if (!running) startReturn();
+    return;
+  }
 
   if (!updateCinematic(dt)) {
     updateFlight(dt);
@@ -614,11 +711,18 @@ function animate() {
   terraform.update(dt, t);
   updateLabels();
   claimLayer.update(camera, window.innerWidth, window.innerHeight, dt);
-  const shake = landing.update(dt);
-  camera.position.add(shake);
   renderer.render(scene, camera);
-  camera.position.sub(shake);
-  cine?.recording?.frame();
+  if (cine) {
+    drawFx();
+    cine.recording?.frame();
+  }
+}
+
+let paused = false; // dev only, see __mars.pause()
+
+function animate() {
+  const dt = Math.min(clock.getDelta(), 0.1);
+  if (!paused) frame(dt);
   requestAnimationFrame(animate);
 }
 animate();
@@ -707,6 +811,29 @@ if (import.meta.env.DEV) {
     spin,
     flyTo,
     terraform, // e.g. __mars.terraform.setCount(41162) to jump to a fully terraformed Mars
+    videos, // recorded landing clips: cell -> { url, ext }
+    pause(on = true) {
+      paused = on;
+    },
+    // Fast-forward the app by `seconds` in small steps (for inspecting animations).
+    step(seconds, dt = 1 / 30) {
+      for (let k = 0; k < seconds / dt; k++) frame(dt);
+    },
+    get phase() {
+      return cine ? `${cine.phase} ${cine.t.toFixed(2)}` : 'idle';
+    },
+    // Replay the landing on your own claim (or a test plot): __mars.playLanding()
+    playLanding(cell) {
+      landingAudio.unlock();
+      const claim = claims.get(cell) ?? [...claims.values()][0] ?? {
+        cell: plotAt(18.4, 77.6),
+        title: 'Test Settler',
+        logo: { src: logoDevUrl('notion.so') },
+      };
+      const { lat, lon } = plotInfo(claim.cell);
+      flyTo(lat, lon, 2.2);
+      setTimeout(() => playLanding(claim), 1700);
+    },
     // Preview a busy Mars: __mars.previewColonies(5000). Visual only, nothing is saved.
     previewColonies(n) {
       const pick = new Set();

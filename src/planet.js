@@ -216,3 +216,39 @@ export async function loadElevationSampler() {
     return ELEV_MIN + v * (ELEV_MAX - ELEV_MIN);
   };
 }
+
+// Loads the color map so we can read the average ground color around any lat/lon
+// (used to match the ground-level landing scene to the real terrain at a plot).
+export async function loadColorSampler() {
+  const img = new Image();
+  img.src = '/textures/mars_color.jpg';
+  await img.decode();
+  const w = 1024;
+  const h = 512;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, w, h);
+  const data = ctx.getImageData(0, 0, w, h).data;
+  return (lat, lon) => {
+    const cx = Math.floor(((lon + 180) / 360) * w);
+    const cy = Math.floor(((90 - lat) / 180) * h);
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    let n = 0;
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const x = (((cx + dx) % w) + w) % w;
+        const y = Math.min(h - 1, Math.max(0, cy + dy));
+        const i = (y * w + x) * 4;
+        r += data[i];
+        g += data[i + 1];
+        b += data[i + 2];
+        n++;
+      }
+    }
+    return new THREE.Color().setRGB(r / n / 255, g / n / 255, b / n / 255, THREE.SRGBColorSpace);
+  };
+}

@@ -23,6 +23,7 @@ import { createLandingSequence } from './landing/sequence.js';
 import { createLandingAudio } from './landing/audio.js';
 import { drawOverlay } from './landing/overlay.js';
 import { createTerraform, nextMilestone, reachedMilestone } from './terraform.js';
+import { createCivilization } from './civilization.js';
 
 // ---------- renderer / scene / camera ----------
 const canvas = document.getElementById('scene');
@@ -104,7 +105,13 @@ function updateClaimedStat() {
 }
 
 let elevationAt = null;
-loadElevationSampler().then((fn) => (elevationAt = fn));
+let civilization = null;
+loadElevationSampler().then((fn) => {
+  elevationAt = fn;
+  // Cities are placed from the real elevation data, so build them once it's loaded.
+  civilization = createCivilization({ elevationAt, parent: spin });
+  terraform.setCivTexture(civilization.texture);
+});
 let colorAt = null;
 loadColorSampler().then((fn) => (colorAt = fn));
 
@@ -586,9 +593,9 @@ async function finishCinematic() {
 
 // ---------- terraforming progress ----------
 let terraPreview = null; // { t, from } while "Preview the future" runs
-const PREVIEW_UP = 8;
-const PREVIEW_HOLD = 3.5;
-const PREVIEW_DOWN = 2;
+const PREVIEW_UP = 11;
+const PREVIEW_HOLD = 7; // at the peak the sun swings behind Mars to show the city lights
+const PREVIEW_DOWN = 2.5;
 
 function updateTerraWidget(count, previewing = false) {
   const total = terraform.total;
@@ -600,7 +607,7 @@ function updateTerraWidget(count, previewing = false) {
   let text;
   if (previewing) text = reached ? `Preview · ${reached.icon} ${reached.name}` : 'Preview · today';
   else if (next) text = `Next: ${next.icon} ${next.name} at ${next.at.toLocaleString()} settlers · ${(next.at - count).toLocaleString()} to go`;
-  else text = '🌍 Mars is fully terraformed. Thank you, settlers.';
+  else text = '🚀 Mars is a spacefaring world. Thank you, settlers.';
   document.getElementById('terra-next').textContent = text;
   document.getElementById('terra').classList.toggle('previewing', previewing);
 }
@@ -611,6 +618,8 @@ function updateTerraPreview(dt) {
   p.t += dt;
   const total = terraform.total;
   let count;
+  const night = p.t > PREVIEW_UP + 0.5 && p.t < PREVIEW_UP + PREVIEW_HOLD - 1;
+  sunTarget = night ? NIGHT_SUN : p.sunBefore;
   if (p.t < PREVIEW_UP) count = p.from + (total - p.from) * ease(p.t / PREVIEW_UP);
   else if (p.t < PREVIEW_UP + PREVIEW_HOLD) count = total;
   else if (p.t < PREVIEW_UP + PREVIEW_HOLD + PREVIEW_DOWN) count = total + (p.from - total) * ease((p.t - PREVIEW_UP - PREVIEW_HOLD) / PREVIEW_DOWN);
@@ -629,7 +638,7 @@ document.getElementById('terra-preview').addEventListener('click', () => {
     terraPreview.t = Math.max(terraPreview.t, PREVIEW_UP + PREVIEW_HOLD); // skip to the way back
     return;
   }
-  terraPreview = { t: 0, from: claims.size };
+  terraPreview = { t: 0, from: claims.size, sunBefore: sunTarget };
   document.getElementById('terra-preview').textContent = '■ Back to today';
   // Pull back so the whole planet is in view.
   if (camera.position.length() < 2.8) {
@@ -708,7 +717,8 @@ function frame(dt) {
 
   moons.update(t);
   updateTerraPreview(dt);
-  terraform.update(dt, t);
+  terraform.update(dt, t, camera);
+  civilization?.update(dt, t, terraform.civ);
   updateLabels();
   claimLayer.update(camera, window.innerWidth, window.innerHeight, dt);
   renderer.render(scene, camera);

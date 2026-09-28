@@ -66,6 +66,22 @@ function placeCities(elevationAt, rand) {
   return cities;
 }
 
+// Small towns across the lowlands and floating cities on the new seas, for the final,
+// near-planet-wide urban stage.
+function placeTowns(elevationAt, rand) {
+  const towns = [];
+  for (let i = 0; i < 9000 && towns.length < 900; i++) {
+    const lat = THREE.MathUtils.radToDeg(Math.asin(rand() * 2 - 1)) * 0.95;
+    const lon = rand() * 360 - 180;
+    if (Math.abs(lat) > 62) continue;
+    const e = elevationAt(lat, lon);
+    if (e < FINAL_SEA) {
+      if (e > FINAL_SEA - 2500 && rand() < 0.08) towns.push({ lat, lon, sea: true }); // floating city
+    } else if (e < 3500 && rand() < 0.5) towns.push({ lat, lon, sea: false });
+  }
+  return towns;
+}
+
 // Minimum spanning tree plus a few extra links, so the network has loops like real ones.
 function buildRoads(cities) {
   const n = cities.length;
@@ -101,7 +117,7 @@ function buildRoads(cities) {
 }
 
 // ---------- bake cities and roads into an equirectangular texture ----------
-function bakeTexture(cities, roads, rand) {
+function bakeTexture(cities, roads, extraTowns, rand) {
   const c = document.createElement('canvas');
   c.width = TEX_W;
   c.height = TEX_H;
@@ -171,6 +187,46 @@ function bakeTexture(cities, roads, rand) {
       prev = [x, y];
     }
     ctx.stroke();
+  }
+
+  // Blue channel: the last stage, when cities sprawl into continuous urban regions along
+  // the transport corridors, towns fill the lowlands and floating cities appear at sea.
+  const blue = (x, y, rx, ry, strength) => {
+    for (const ox of [0, -TEX_W, TEX_W]) {
+      if (x + ox + rx < 0 || x + ox - rx > TEX_W) continue;
+      ctx.save();
+      ctx.translate(x + ox, y);
+      ctx.scale(rx, ry);
+      const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+      g.addColorStop(0, `rgba(0,0,255,${strength})`);
+      g.addColorStop(1, 'rgba(0,0,255,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(0, 0, 1, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  };
+  for (const [i, j] of roads) {
+    const [x1, y1] = px(cities[i].lat, cities[i].lon);
+    const [x2, y2] = px(cities[j].lat, cities[j].lon);
+    if (Math.abs(x1 - x2) > TEX_W / 2) continue;
+    const n = Math.ceil(Math.hypot(x2 - x1, y2 - y1) / 5);
+    for (let k = 0; k <= n; k++) {
+      const f = k / n;
+      const r = 2 + rand() * 4;
+      blue(x1 + (x2 - x1) * f + (rand() - 0.5) * 6, y1 + (y2 - y1) * f + (rand() - 0.5) * 6, r, r, 0.35 + rand() * 0.35);
+    }
+  }
+  for (const city of cities) {
+    const [x, y] = px(city.lat, city.lon);
+    const r = 6 + city.size * 12;
+    blue(x, y, r / Math.max(0.35, Math.cos(rad(city.lat))), r, 0.6);
+  }
+  for (const town of extraTowns) {
+    const [x, y] = px(town.lat, town.lon);
+    const r = 1.5 + rand() * 3;
+    blue(x, y, r / Math.max(0.35, Math.cos(rad(town.lat))), r, town.sea ? 0.8 : 0.55);
   }
 
   const tex = new THREE.CanvasTexture(c);
@@ -243,7 +299,7 @@ export function createCivilization({ elevationAt, parent, seed = 4242 }) {
   const rand = mulberry(seed);
   const cities = placeCities(elevationAt, rand);
   const roads = buildRoads(cities);
-  const texture = bakeTexture(cities, roads, rand);
+  const texture = bakeTexture(cities, roads, placeTowns(elevationAt, rand), rand);
   const cityPos = cities.map((c) => latLonToVec3(c.lat, c.lon, 1.003));
 
   const group = new THREE.Group();
@@ -338,12 +394,13 @@ export function createCivilization({ elevationAt, parent, seed = 4242 }) {
   return {
     texture,
     cityCount: cities.length,
+    cityPositions: cityPos,
     update(dt, t, civ) {
       group.visible = civ > 0.01;
       if (!group.visible) return;
 
       // Ring grows around the planet, then elevators and big stations appear.
-      const ringK = range(civ, 0.45, 0.8);
+      const ringK = range(civ, 0.3, 0.55);
       const built = Math.round(ringK * 200) / 200;
       if (built !== builtRing) {
         builtRing = built;
@@ -353,12 +410,12 @@ export function createCivilization({ elevationAt, parent, seed = 4242 }) {
       ring.visible = ringK > 0;
       strip.visible = modules.visible = ringK >= 1;
       stripMat.opacity = 0.5 + 0.35 * Math.sin(t * 0.8) ** 2;
-      const elevK = range(civ, 0.55, 0.85);
+      const elevK = range(civ, 0.4, 0.6);
       for (const { m } of tethers) {
         m.visible = elevK > 0;
         m.scale.y = Math.max(0.001, elevK);
       }
-      const stationK = range(civ, 0.6, 0.9);
+      const stationK = range(civ, 0.45, 0.65);
       for (const st of stations) {
         st.s.visible = stationK > 0;
         st.s.scale.setScalar(Math.max(0.001, stationK));
@@ -374,7 +431,7 @@ export function createCivilization({ elevationAt, parent, seed = 4242 }) {
       const sp = sats.geometry.attributes.position.array;
       const sc = sats.geometry.attributes.aColor.array;
       const ss = sats.geometry.attributes.aSize.array;
-      const satCount = Math.floor(range(civ, 0.1, 0.9) * SATS);
+      const satCount = Math.floor(range(civ, 0.1, 0.7) * SATS);
       for (let i = 0; i < SATS; i++) {
         const o = satOrbits[i];
         const a = o.phase + t * 0.35 * o.r ** -1.5;
@@ -393,7 +450,7 @@ export function createCivilization({ elevationAt, parent, seed = 4242 }) {
       const tp = traffic.geometry.attributes.position.array;
       const tc = traffic.geometry.attributes.aColor.array;
       const ts = traffic.geometry.attributes.aSize.array;
-      const active = Math.floor(range(civ, 0.2, 1) * SHIPS);
+      const active = Math.floor(range(civ, 0.2, 0.9) * SHIPS);
       for (let i = 0; i < SHIPS; i++) {
         const ship = ships[i];
         if (!ship.route) newRoute(ship);

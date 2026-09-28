@@ -24,6 +24,7 @@ import { createLandingAudio } from './landing/audio.js';
 import { drawOverlay } from './landing/overlay.js';
 import { createTerraform, nextMilestone, reachedMilestone } from './terraform.js';
 import { createCivilization } from './civilization.js';
+import { createMegastructures } from './megastructures.js';
 
 // ---------- renderer / scene / camera ----------
 const canvas = document.getElementById('scene');
@@ -46,7 +47,7 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.06;
 controls.enablePan = false;
 controls.minDistance = 1.12;
-controls.maxDistance = 7;
+controls.maxDistance = 14; // far enough to see the areostationary belt
 controls.zoomSpeed = 0.7;
 
 // ---------- lighting ----------
@@ -106,11 +107,24 @@ function updateClaimedStat() {
 
 let elevationAt = null;
 let civilization = null;
+let megastructures = null;
 loadElevationSampler().then((fn) => {
   elevationAt = fn;
   // Cities are placed from the real elevation data, so build them once it's loaded.
   civilization = createCivilization({ elevationAt, parent: spin });
   terraform.setCivTexture(civilization.texture);
+  megastructures = createMegastructures({
+    scene,
+    planet,
+    spin,
+    cities: civilization.cityPositions,
+    sunDir: atmosphere.uniforms.sunDir,
+    phobos: moons.group.children[0],
+  });
+  // Everything is still visible until the next frame's update hides it, so compile all the
+  // new shaders now, in the background. Otherwise each one compiles the first time its
+  // milestone appears, which can freeze the page for seconds (notably on Windows/ANGLE).
+  renderer.compileAsync(scene, camera).catch(() => {});
 });
 let colorAt = null;
 loadColorSampler().then((fn) => (colorAt = fn));
@@ -594,7 +608,11 @@ async function finishCinematic() {
 // ---------- terraforming progress ----------
 let terraPreview = null; // { t, from } while "Preview the future" runs
 const PREVIEW_UP = 11;
-const PREVIEW_HOLD = 7; // at the peak the sun swings behind Mars to show the city lights
+// At the peak: swing to night for the city lights, then pull far back to show the whole
+// system (habitats, solar swarm, exobelt), then return.
+const PREVIEW_HOLD = 11;
+const PULL_BACK_AT = PREVIEW_UP + 4.5;
+const RETURN_AT = PREVIEW_UP + PREVIEW_HOLD - 1.6;
 const PREVIEW_DOWN = 2.5;
 
 function updateTerraWidget(count, previewing = false) {
@@ -618,8 +636,19 @@ function updateTerraPreview(dt) {
   p.t += dt;
   const total = terraform.total;
   let count;
-  const night = p.t > PREVIEW_UP + 0.5 && p.t < PREVIEW_UP + PREVIEW_HOLD - 1;
+  const night = p.t > PREVIEW_UP + 0.5 && p.t < PULL_BACK_AT + 0.8;
   sunTarget = night ? NIGHT_SUN : p.sunBefore;
+  const here = () => vec3ToLatLon(spin.worldToLocal(camera.position.clone()));
+  if (p.t >= PULL_BACK_AT && !p.pulled) {
+    p.pulled = true;
+    const { lat, lon } = here();
+    flyTo(Math.max(-35, Math.min(35, lat + 22)), lon, 11.5);
+  }
+  if (p.t >= RETURN_AT && !p.returned) {
+    p.returned = true;
+    const { lat, lon } = here();
+    flyTo(lat, lon, 3.4);
+  }
   if (p.t < PREVIEW_UP) count = p.from + (total - p.from) * ease(p.t / PREVIEW_UP);
   else if (p.t < PREVIEW_UP + PREVIEW_HOLD) count = total;
   else if (p.t < PREVIEW_UP + PREVIEW_HOLD + PREVIEW_DOWN) count = total + (p.from - total) * ease((p.t - PREVIEW_UP - PREVIEW_HOLD) / PREVIEW_DOWN);
@@ -719,6 +748,7 @@ function frame(dt) {
   updateTerraPreview(dt);
   terraform.update(dt, t, camera);
   civilization?.update(dt, t, terraform.civ);
+  megastructures?.update(dt, t, terraform.civ);
   updateLabels();
   claimLayer.update(camera, window.innerWidth, window.innerHeight, dt);
   renderer.render(scene, camera);

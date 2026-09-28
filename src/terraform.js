@@ -16,9 +16,11 @@ const KEYS = [
   { at: 5000, clouds: 0.45, sky: 1, sea: -6500, green: 0, civ: 0 },
   { at: 10000, clouds: 0.5, sky: 1, sea: -5300, green: 0.2, civ: 0 },
   { at: 20000, clouds: 0.55, sky: 1, sea: -4700, green: 1, civ: 0 },
-  { at: 25000, clouds: 0.55, sky: 1, sea: -4300, green: 1, civ: 0.18 },
-  { at: 30000, clouds: 0.6, sky: 1, sea: -3760, green: 1, civ: 0.42 },
-  { at: 35000, clouds: 0.6, sky: 1, sea: -3760, green: 1, civ: 0.72 },
+  { at: 25000, clouds: 0.55, sky: 1, sea: -4300, green: 1, civ: 0.15 },
+  { at: 30000, clouds: 0.6, sky: 1, sea: -3760, green: 1, civ: 0.35 },
+  { at: 33000, clouds: 0.6, sky: 1, sea: -3760, green: 1, civ: 0.5 },
+  { at: 36000, clouds: 0.6, sky: 1, sea: -3760, green: 1, civ: 0.7 },
+  { at: 39000, clouds: 0.6, sky: 1, sea: -3760, green: 1, civ: 0.85 },
   { at: 41162, clouds: 0.6, sky: 1, sea: -3760, green: 1, civ: 1 },
 ];
 
@@ -30,8 +32,10 @@ export const MILESTONES = [
   { at: 20000, icon: '🌿', name: 'Green shores' },
   { at: 25000, icon: '🏙️', name: 'First cities' },
   { at: 30000, icon: '🌍', name: 'The Northern Ocean returns' },
-  { at: 35000, icon: '🛰️', name: 'Orbital ring & space elevators' },
-  { at: 41162, icon: '🚀', name: 'A spacefaring Mars' },
+  { at: 33000, icon: '🛰️', name: 'Orbital ring & space elevators' },
+  { at: 36000, icon: '🧲', name: 'Magnetic shield & auroras' },
+  { at: 39000, icon: '☀️', name: 'Orbital solar power swarm' },
+  { at: 41162, icon: '🌌', name: 'Kardashev Type I civilization' },
 ];
 
 function paramsAt(count) {
@@ -97,9 +101,12 @@ function patchSurface(material, uniforms) {
         // Density fades in from the core outward: reveal = how much of each city exists yet.
         civUrban = min(1.0, civ.r * 1.6) * smoothstep(1.0 - civAmount, 1.0 - civAmount + 0.35, civ.r) * (1.0 - terraWater) * step(0.001, civAmount);
         civRoad = civ.g * smoothstep(0.3, 0.6, civAmount) * (1.0 - terraWater);
+        // Final stage: sprawl merges cities into urban regions; floating cities at sea.
+        float eco = civ.b * smoothstep(0.84, 1.0, civAmount);
+        civUrban = max(civUrban, eco * mix(1.0, 0.7, terraWater));
         float block = civHash(floor(vMapUv * vec2(8192.0, 4096.0)));
         vec3 urbanDay = mix(vec3(0.3, 0.3, 0.32), vec3(0.62, 0.62, 0.64), block);
-        diffuseColor.rgb = mix(diffuseColor.rgb, urbanDay, civUrban * 0.75);
+        diffuseColor.rgb = mix(diffuseColor.rgb, urbanDay, civUrban * 0.75 * (1.0 - terraWater * 0.6));
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.18, 0.18, 0.2), civRoad * 0.35);`
       )
       .replace(

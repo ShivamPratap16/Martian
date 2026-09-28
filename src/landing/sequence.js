@@ -158,6 +158,8 @@ export function createLandingSequence(renderer) {
       rover.setDeploy(0);
       rover.setMast(0);
       rover.setFlag(0);
+      // Compile every shader while the orbit dive plays, so the first ground frame doesn't stall.
+      await renderer.compileAsync(world.scene, camera).catch(() => {});
     },
 
     // Advances and renders one frame. Calls on(event) for sound cues; returns false when finished.

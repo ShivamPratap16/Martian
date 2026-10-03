@@ -2,20 +2,24 @@
 //
 // POST { action: 'create', cell, title, description, url, logo, deviceId, turnstileToken }
 // POST { action: 'update', cell, editToken, title, description, url, logo }
+// POST { action: 'checkout', cell, title, description, url, logo, deviceId, turnstileToken }
+//   famous plots: saves the claim as an order and returns a Dodo Payments checkout URL.
+//   The dodo-webhook function turns the order into a claim once the payment succeeds.
+// POST { action: 'order', orderId, editToken }  -> { status, claim? } for the buyer
 //   logo = { type: 'logodev' | 'monogram', src }  (src must be an img.logo.dev URL)
 //        | { type: 'upload', dataUrl }            (PNG data URL, resized in the browser)
 //
 // Rules enforced here, whatever the browser says:
-//  - valid plot at the site's H3 resolution, and free (famous plots need checkout)
+//  - valid plot at the site's H3 resolution, and free (famous plots go through checkout)
 //  - one free plot per device and at most FREE_PER_IP_PER_DAY per network per day
 //  - Cloudflare Turnstile check when TURNSTILE_SECRET is set
 //  - logos from a website link go live at once; uploaded images wait for approval
 // Called with the publishable key, so deploy with verify_jwt = false.
 
-import { createClient } from 'npm:@supabase/supabase-js@2';
 import { cellToLatLng, getResolution, isValidCell } from 'npm:h3-js@4';
-import { featureAt } from '../_shared/features.js';
+import { featureAt, PREMIUM_PRICE } from '../_shared/features.js';
 import { lightDelaySeconds } from '../_shared/orbits.js';
+import { db, publicRow, randomToken, secretKey, sha256 } from '../_shared/db.ts';
 
 const PLOT_RES = 3;
 const FREE_PER_IP_PER_DAY = 3;
@@ -34,26 +38,6 @@ class HttpError extends Error {
   constructor(public status: number, message: string) {
     super(message);
   }
-}
-
-function secretKey(): string {
-  const keys = Deno.env.get('SUPABASE_SECRET_KEYS');
-  if (keys) {
-    const parsed = JSON.parse(keys);
-    return parsed.default ?? Object.values(parsed)[0];
-  }
-  return Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-}
-
-const db = createClient(Deno.env.get('SUPABASE_URL')!, secretKey(), { auth: { persistSession: false } });
-
-async function sha256(text: string): Promise<string> {
-  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-function randomToken(): string {
-  return [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 function cleanText(value: unknown, max: number): string {
@@ -106,21 +90,22 @@ async function resolveLogo(logo: any, cell: string, domain: string) {
   throw new HttpError(400, 'Add your website link or upload a logo.');
 }
 
-// What the browser gets back: the same shape as the claims_public view, as its owner sees it.
-function publicRow(row: any) {
-  const { edit_token_hash, ip_hash, device_id, ...rest } = row;
-  return rest;
+function validCell(value: unknown): string {
+  const cell = String(value ?? '');
+  if (!isValidCell(cell) || getResolution(cell) !== PLOT_RES) throw new HttpError(400, 'That is not a valid plot.');
+  return cell;
 }
 
+const ipHashOf = (ip: string) => sha256(`${ip}|${secretKey()}`);
+
 async function create(body: any, ip: string) {
-  const cell = String(body.cell ?? '');
-  if (!isValidCell(cell) || getResolution(cell) !== PLOT_RES) throw new HttpError(400, 'That is not a valid plot.');
+  const cell = validCell(body.cell);
   const [lat, lon] = cellToLatLng(cell);
-  if (featureAt(lat, lon)) throw new HttpError(402, 'Famous plots can only be bought. Checkout is coming soon.');
+  if (featureAt(lat, lon)) throw new HttpError(402, 'Famous plots can only be bought.');
 
   await verifyTurnstile(body.turnstileToken, ip);
 
-  const ipHash = await sha256(`${ip}|${secretKey()}`);
+  const ipHash = await ipHashOf(ip);
   const deviceId = cleanText(body.deviceId, 64);
   const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
   const { count: recent } = await db
@@ -183,6 +168,108 @@ async function update(body: any) {
   return { claim: publicRow(data) };
 }
 
+// ---------- paid plots (Dodo Payments) ----------
+
+const DODO_API = Deno.env.get('DODO_ENVIRONMENT') === 'live_mode' ? 'https://live.dodopayments.com' : 'https://test.dodopayments.com';
+
+async function createCheckoutSession(order: { id: string; cell: string; amount: number }, site: string) {
+  const res = await fetch(`${DODO_API}/checkouts`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${Deno.env.get('DODO_API_KEY')}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      // A one-time product priced at PREMIUM_PRICE. `amount` only applies if the product is
+      // set to pay-what-you-want, and then pins the price.
+      product_cart: [{ product_id: Deno.env.get('DODO_PRODUCT_ID'), quantity: 1, amount: order.amount }],
+      metadata: { order_id: order.id, cell: order.cell },
+      return_url: `${site}/?order=${order.id}`,
+      cancel_url: `${site}/`,
+    }),
+  });
+  const out = await res.json().catch(() => ({}));
+  if (!res.ok || !out.checkout_url) {
+    console.error('Dodo checkout failed', res.status, out);
+    throw new HttpError(502, 'Could not start the checkout. Please try again.');
+  }
+  return out as { session_id: string; checkout_url: string };
+}
+
+// Where Dodo sends the buyer back to: SITE_URL if set, else the page that asked.
+function siteUrl(req: Request): string {
+  const site = Deno.env.get('SITE_URL') || req.headers.get('origin') || '';
+  if (!/^https?:\/\/[^/]+/.test(site)) throw new HttpError(400, 'Bad request.');
+  return site.replace(/\/+$/, '');
+}
+
+async function checkout(body: any, ip: string, req: Request) {
+  if (!Deno.env.get('DODO_API_KEY') || !Deno.env.get('DODO_PRODUCT_ID')) throw new HttpError(503, 'Checkout is not open yet.');
+  const site = siteUrl(req);
+  const cell = validCell(body.cell);
+  const [lat, lon] = cellToLatLng(cell);
+  if (!featureAt(lat, lon)) throw new HttpError(400, 'This plot is free. Claim it instead.');
+
+  await verifyTurnstile(body.turnstileToken, ip);
+
+  const { data: taken } = await db.from('claims').select('cell').eq('cell', cell).maybeSingle();
+  if (taken) throw new HttpError(409, 'Someone just claimed this plot. Pick another one.');
+
+  // A pending checkout holds the plot for a while. The same browser may start over.
+  const deviceId = cleanText(body.deviceId, 64);
+  const now = new Date().toISOString();
+  const { data: held } = await db.from('orders').select('id, device_id').eq('cell', cell).eq('status', 'pending').gt('expires_at', now);
+  if (held?.some((o) => !deviceId || o.device_id !== deviceId)) {
+    throw new HttpError(409, 'Someone is checking out this plot right now. Try again in a few minutes.');
+  }
+  if (held?.length) await db.from('orders').update({ status: 'failed' }).in('id', held.map((o) => o.id));
+
+  const link = cleanLink(body.url);
+  const title = cleanText(body.title, 40) || link?.domain || '';
+  if (!title) throw new HttpError(400, 'Add a name for your plot.');
+  const logo = await resolveLogo(body.logo, cell, link?.domain ?? '');
+  const editToken = randomToken();
+
+  const { data: order, error } = await db
+    .from('orders')
+    .insert({
+      cell,
+      title,
+      description: cleanText(body.description, 100),
+      url: link?.url ?? '',
+      domain: link?.domain ?? '',
+      logo_type: logo.logo_type,
+      logo_url: logo.logo_url,
+      logo_status: logo.status,
+      amount: PREMIUM_PRICE * 100,
+      edit_token_hash: await sha256(editToken),
+      ip_hash: await ipHashOf(ip),
+      device_id: deviceId,
+    })
+    .select()
+    .single();
+  if (error) throw new HttpError(500, 'Could not start the checkout.');
+
+  const session = await createCheckoutSession(order, site).catch(async (err) => {
+    await db.from('orders').update({ status: 'failed' }).eq('id', order.id); // free the plot again
+    throw err;
+  });
+  await db.from('orders').update({ checkout_session_id: session.session_id }).eq('id', order.id);
+  return { orderId: order.id, editToken, checkoutUrl: session.checkout_url };
+}
+
+// The buyer checks on their order after paying (the webhook may arrive a moment later).
+async function orderStatus(body: any) {
+  const id = String(body.orderId ?? '');
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new HttpError(400, 'Bad request.');
+  const { data: order } = await db.from('orders').select('*').eq('id', id).maybeSingle();
+  if (!order || order.edit_token_hash !== (await sha256(String(body.editToken ?? '')))) {
+    throw new HttpError(404, 'Order not found.');
+  }
+  // Dodo checkout links expire after 24 hours, so an older pending order was abandoned.
+  const abandoned = order.status === 'pending' && Date.now() - Date.parse(order.created_at) > 25 * 3600 * 1000;
+  if (order.status !== 'paid') return { status: abandoned ? 'failed' : order.status, cell: order.cell };
+  const { data: claim } = await db.from('claims').select('*').eq('cell', order.cell).maybeSingle();
+  return { status: order.status, cell: order.cell, claim: claim ? publicRow(claim) : null };
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
@@ -191,7 +278,16 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => {
       throw new HttpError(400, 'Bad request.');
     });
-    return json(body.action === 'update' ? await update(body) : await create(body, ip));
+    switch (body.action) {
+      case 'update':
+        return json(await update(body));
+      case 'checkout':
+        return json(await checkout(body, ip, req));
+      case 'order':
+        return json(await orderStatus(body));
+      default:
+        return json(await create(body, ip));
+    }
   } catch (err) {
     if (err instanceof HttpError) return json({ error: err.message }, err.status);
     console.error(err);

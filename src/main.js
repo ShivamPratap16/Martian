@@ -13,7 +13,10 @@ import {
 } from './planet.js';
 import { allPlots, plotAt, plotInfo, createGridLines, createCellHighlight } from './grid.js';
 import { FEATURES, featureAt, priceAt } from './features.js';
-import { loadClaims, saveClaim, updateClaim, myFreeClaim, editTokenFor, editLinkFor, importEditLink } from './store.js';
+import {
+  loadClaims, saveClaim, updateClaim, myFreeClaim, editTokenFor, editLinkFor, importEditLink,
+  backendEnabled, startCheckout, takeReturnedOrder, pendingOrders, checkOrder,
+} from './store.js';
 import { getTurnstileToken } from './turnstile.js';
 import { createClaimLayer, normalizeUrl, findLogo, logoDevUrl, fileToLogo } from './logos.js';
 import { lightDelaySeconds, formatDuration, marsSolDate } from './orbits.js';
@@ -93,6 +96,7 @@ const colonies = createColonyLights();
 spin.add(colonies.object);
 let claims = new Map();
 const editCell = importEditLink(); // opened from an edit link on another device
+const returnedOrder = takeReturnedOrder(); // back from a Dodo checkout
 async function refreshClaims() {
   try {
     claims = await loadClaims();
@@ -110,6 +114,7 @@ refreshClaims().then(() => {
     flyTo(lat, lon, 1.6);
     selectCell(editCell);
   }
+  followOrders();
 });
 // Everyone shares one map: pick up other people's claims (and approvals) as they happen.
 setInterval(() => !cine && !document.hidden && refreshClaims(), 30000);
@@ -309,8 +314,8 @@ function selectCell(cell) {
     $('panel-price').textContent = price ? `$${price}` : 'Free';
     $('panel-status').textContent = 'Available';
     if (price) {
-      cta.textContent = `Buy for $${price} · checkout coming soon`;
-      cta.disabled = true;
+      cta.textContent = backendEnabled ? `Buy for $${price}` : `Buy for $${price} · checkout coming soon`;
+      cta.disabled = !backendEnabled;
     } else if (mine) {
       cta.textContent = 'You already claimed your free plot';
       cta.disabled = true;
@@ -354,7 +359,9 @@ function resetForm() {
 
 function openForm(mode) {
   formMode = mode;
-  $('f-submit').textContent = mode === 'edit' ? 'Save changes' : 'Plant my flag';
+  const { lat, lon } = plotInfo(selectedCell);
+  $('f-submit').textContent =
+    mode === 'edit' ? 'Save changes' : mode === 'buy' ? `Continue to payment · $${priceAt(lat, lon)}` : 'Plant my flag';
   show('owner', false);
   show('panel-cta', false);
   show('panel-price-row', false);
@@ -364,7 +371,8 @@ function openForm(mode) {
 
 $('panel-cta').addEventListener('click', () => {
   resetForm();
-  openForm('create');
+  const { lat, lon } = plotInfo(selectedCell);
+  openForm(priceAt(lat, lon) > 0 ? 'buy' : 'create');
 });
 
 $('owner-edit').addEventListener('click', () => {
@@ -441,6 +449,25 @@ $('claim-form').addEventListener('submit', async (e) => {
   const { lat, lon } = plotInfo(selectedCell);
   if (formMode === 'create' && priceAt(lat, lon) > 0) return err('Famous plots can only be bought.');
   if (link && !formLogo) await lookupLogo(); // submitted before the lookup finished
+
+  if (formMode === 'buy') {
+    $('f-submit').disabled = true;
+    try {
+      const checkoutUrl = await startCheckout({
+        cell: selectedCell,
+        title,
+        description: $('f-desc').value.trim(),
+        url: link?.url ?? '',
+        logo: formLogo,
+      }, { turnstileToken: await getTurnstileToken() });
+      $('f-submit').textContent = 'Opening checkout…';
+      location.href = checkoutUrl; // Dodo brings the buyer back with ?order=<id>
+    } catch (e2) {
+      err(e2.message);
+      $('f-submit').disabled = false;
+    }
+    return;
+  }
 
   $('f-submit').disabled = true;
   if (formMode === 'edit') {
@@ -842,6 +869,7 @@ function showSignalToast(claim) {
   if (!claim?.landsAt) return;
   toastClaim = claim;
   clearTimeout(toastHideTimer);
+  $('toast-icon').textContent = '📡';
   $('toast-title').textContent = 'Signal sent to Mars';
   show('toast', true);
   updateSignal();
@@ -878,6 +906,58 @@ $('toast').addEventListener('click', () => {
   toastClaim = null;
   show('toast', false);
 });
+
+function showNotice(icon, title, body, hideAfter = 0) {
+  toastClaim = null;
+  clearTimeout(toastHideTimer);
+  $('toast-icon').textContent = icon;
+  $('toast-title').textContent = title;
+  $('toast-body').textContent = body;
+  show('toast', true);
+  if (hideAfter) toastHideTimer = setTimeout(() => show('toast', false), hideAfter);
+}
+
+// ---------- paid plots: after checkout ----------
+// The buyer comes back from Dodo before (or just after) the payment webhook lands, so poll
+// the order for a little while. Other unsettled orders are checked quietly once.
+async function followOrders() {
+  for (const id of pendingOrders()) {
+    if (id !== returnedOrder) checkOrder(claims, id).then(onOrderSettled, () => {});
+  }
+  if (!returnedOrder) return;
+  showNotice('💳', 'Confirming your payment…', 'This usually takes a few seconds.');
+  for (let i = 0; i < 40; i++) {
+    let out;
+    try {
+      out = await checkOrder(claims, returnedOrder);
+    } catch {
+      out = { status: 'pending' };
+    }
+    if (out.status !== 'pending') return onOrderSettled(out, true);
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+  showNotice('⏳', 'Still waiting for the payment', 'If you paid, your plot appears as soon as it is confirmed. Check back in a few minutes.', 15000);
+}
+
+function onOrderSettled(out, returned = false) {
+  if (out.status === 'pending') return;
+  if (out.status === 'paid' && out.claim) {
+    claimLayer.sync(claims);
+    colonies.sync(claims);
+    updateClaimedStat();
+    if (!returned) return;
+    const { lat, lon } = plotInfo(out.cell);
+    flyTo(lat, lon, 1.35);
+    selectCell(out.cell);
+    showSignalToast(out.claim);
+    landingAudio.unlock();
+    playLanding(out.claim);
+  } else if (out.status === 'conflict') {
+    showNotice('⚠️', 'Someone got this plot first', 'Your payment went through just after another buyer. It will be refunded.');
+  } else if (returned) {
+    showNotice('💳', 'Payment not completed', 'Your plot was not bought. You can try again.', 10000);
+  }
+}
 
 // ---------- night view ----------
 $('night-btn').addEventListener('click', () => {

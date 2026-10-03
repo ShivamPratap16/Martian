@@ -186,3 +186,68 @@ export function importEditLink() {
   write(MY_FREE_KEY, cell);
   return cell;
 }
+
+// ---------- paid plots (Dodo Payments) ----------
+// Buying saves the claim as an order on the server and returns a Dodo checkout link. After
+// paying, Dodo sends the buyer back with ?order=<id>; the order's edit token stays in this
+// browser so it can check the order and edit the plot afterwards.
+
+const ORDERS_KEY = 'claimMars.orders.v1'; // { orderId: { cell, editToken } }
+
+export async function startCheckout(draft, { turnstileToken } = {}) {
+  if (!backendEnabled) throw new Error('Checkout needs the server, which is not set up here.');
+  const out = await callFunction({
+    action: 'checkout',
+    cell: draft.cell,
+    title: draft.title,
+    description: draft.description,
+    url: draft.url,
+    logo: logoPayload(draft.logo),
+    deviceId: deviceId(),
+    turnstileToken,
+  });
+  const orders = read(ORDERS_KEY, {});
+  orders[out.orderId] = { cell: draft.cell, editToken: out.editToken };
+  if (!write(ORDERS_KEY, orders)) throw new Error('Could not save your order (browser storage is full or blocked).');
+  return out.checkoutUrl;
+}
+
+// Back from checkout: the order id from the URL (then cleaned), or null.
+export function takeReturnedOrder() {
+  const params = new URLSearchParams(location.search);
+  const id = params.get('order');
+  if (!id) return null;
+  for (const key of ['order', 'payment_id', 'status']) params.delete(key); // Dodo adds the last two
+  history.replaceState(null, '', `${location.pathname}${params.size ? `?${params}` : ''}${location.hash}`);
+  return read(ORDERS_KEY, {})[id] ? id : null;
+}
+
+export function pendingOrders() {
+  return Object.keys(read(ORDERS_KEY, {}));
+}
+
+// Asks the server how the order is doing. Returns { status, cell, claim? } where status is
+// 'pending' | 'paid' | 'conflict' | 'failed'. Once settled, the order is forgotten; a paid
+// one becomes this browser's plot.
+export async function checkOrder(claims, orderId) {
+  const orders = read(ORDERS_KEY, {});
+  const order = orders[orderId];
+  if (!order) return { status: 'failed' };
+  let out;
+  try {
+    out = await callFunction({ action: 'order', orderId, editToken: order.editToken });
+  } catch (err) {
+    if (/not found/i.test(err.message)) out = { status: 'failed', cell: order.cell };
+    else throw err;
+  }
+  if (out.status === 'paid' && out.claim) {
+    const claim = fromRow(out.claim);
+    claims.set(claim.cell, claim);
+    remember(claim, order.editToken);
+  }
+  if (out.status !== 'pending') {
+    delete orders[orderId];
+    write(ORDERS_KEY, orders);
+  }
+  return { ...out, claim: claims.get(out.cell) ?? null };
+}

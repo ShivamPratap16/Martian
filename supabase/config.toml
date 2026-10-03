@@ -4,3 +4,7 @@ project_id = "rgpzxvlhwwuhhaszwhsc"
 # own checks (limits, Turnstile, edit tokens).
 [functions.claim]
 verify_jwt = false
+
+# Called by Dodo Payments; requests are checked with the webhook signature instead.
+[functions.dodo-webhook]
+verify_jwt = false
